@@ -16,6 +16,8 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
 
+#include "threadpool.h"
+
 using namespace std;
 
 struct WorkerTask {
@@ -192,6 +194,15 @@ void Worker(WorkerTask *task) {
 }
 
 int main(int argc, char** argv) {
+  ThreadPool *pool = new ThreadPool(2);
+  pool->AddTask((void*)1);
+  pool->AddTask((void*)2);
+  pool->AddTask((void*)3);
+  pool->AddTask((void*)4);
+  pool->AddTask((void*)5);
+  delete pool;
+  return 0;
+
   if (argc < 3) {
     printf("usage: %s [do write 1/0] [do read 1/0] [num of threads]\n");
     return -1;
