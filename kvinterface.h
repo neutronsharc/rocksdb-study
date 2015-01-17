@@ -10,12 +10,6 @@ enum {
   DELETE = 2,
 };
 
-static const char* CmdName[] = {
-  "GET",
-  "PUT",
-  "DELETE"
-};
-
 typedef struct KVRequest KVRequest;
 
 struct KVRequest {
@@ -43,12 +37,8 @@ void CloseDB(void* dbHandler);
 // Run the requests, block until the rqsts finished,
 int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest);
 
-void DumpKVRequest(KVRequest* p) {
-  if (p->type <= DELETE) {
-    printf("KV cmd type = %s\n", CmdName[p->type]);
-  } else {
-    printf("Unknown KV cmd type = %d\n", p->type);
-  }
-}
+void DumpKVRequest(KVRequest* p);
+
+//unsigned long time_microsec();
 
 #endif  // __KVINTERFACE__

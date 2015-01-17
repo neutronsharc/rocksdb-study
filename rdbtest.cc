@@ -18,9 +18,9 @@
 
 #include "threadpool.h"
 #include "kvinterface.h"
+#include "kvimpl_rocks.h"
 
 using namespace std;
-
 
 struct WorkerTask {
   // worker thread ID
@@ -195,19 +195,52 @@ void Worker(WorkerTask *task) {
 
 }
 
-void TryThreadPool() {
+
+void TryRocksDB(string &dbpath, int numThreads) {
+  RocksDBInterface rdb;
+  assert(rdb.OpenDB(dbpath.c_str(), numThreads) == true);
+
+  char key[128];
+  char charvalue[1024];
+  int objSize = 1023;
+
+  KVRequest write;
+  write.type = PUT;
+
+  KVRequest read;
+  read.type = GET;
+
+  sprintf(key, "key-1");
+  write.key = key;
+  write.keylen = strlen(key);
+
+  sprintf(charvalue, "value-%d", 10);
+  memset(charvalue + strlen(charvalue), 'A', 1024 - strlen(charvalue));
+  charvalue[1023] = 0;
+  write.value = charvalue;
+  write.vlen = strlen(charvalue);
+
+  rdb.PostRequest(&write);
+
+  sleep(1);
+
+  read.key = key;
+  read.keylen = strlen(key);
+  rdb.PostRequest(&read);
 
 }
 
-int main(int argc, char** argv) {
-  ThreadPool *pool = new ThreadPool(2);
-  pool->AddTask((void*)1);
-  pool->AddTask((void*)2);
-  pool->AddTask((void*)3);
-  pool->AddTask((void*)4);
-  pool->AddTask((void*)5);
+void TryThreadPool() {
+  ThreadPool *pool = new ThreadPool(2, NULL);
+  pool->AddWork((void*)1);
+  pool->AddWork((void*)2);
+  pool->AddWork((void*)3);
+  pool->AddWork((void*)4);
+  pool->AddWork((void*)5);
   delete pool;
-  return 0;
+}
+
+int main(int argc, char** argv) {
 
   if (argc < 3) {
     printf("usage: %s [do write 1/0] [do read 1/0] [num of threads]\n");
@@ -217,6 +250,11 @@ int main(int argc, char** argv) {
   bool doWrite = atoi(argv[1]) == 0 ? false : true;
   bool doRead = atoi(argv[2]) == 0 ? false : true;
   int numTasks = atoi(argv[3]);
+
+  //TryThreadPool();
+  TryRocksDB(kDBPath, numTasks);
+  return 0;
+
 
   // Prepare general DB options.
   rocksdb::Options options;

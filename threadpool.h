@@ -17,7 +17,12 @@
 #include <string>
 #include <thread>
 
+#include "kvinterface.h"
+#include "kvstore.h"
+
 using namespace std;
+
+class KVStore;
 
 // Function that handles an item from the work queue.
 typedef void (*DataProcessor)(void*);
@@ -101,17 +106,14 @@ class WorkQueue {
   pthread_cond_t cond_;
 };
 
-void GetWork(void *p, int id) {
+static void GetWork(void *p, int id, KVStore* kvstore) {
   void *data;
   WorkQueue *wq = (WorkQueue*)p;
-  printf("thread %d started...\n", id);
+  printf("thread %d started, kvstore = %p...\n", id, kvstore);
   while (data = wq->GetNext()) {
-    printf("thread %d got data %ld\n", id, (long)data);
-    // TODO: call processor to handle it.
-    sleep(1);
-    /*if (processor_ != NULL) {
-      (*processor_)(data);
-    }*/
+    if (kvstore) {
+      kvstore->ProcessRequest((KVRequest*)data);
+    }
   }
   printf("thread %d stopped...\n", id);
 }
@@ -119,10 +121,10 @@ void GetWork(void *p, int id) {
 
 class ThreadPool {
  public:
-  ThreadPool(int n) : numberThreads_(n) {
+  ThreadPool(int n, KVStore* kvstore) : numberThreads_(n), kvstore_(kvstore) {
     threads_ = new std::thread[n];
     for (int i = 0; i < n; i++) {
-      threads_[i] = std::thread(GetWork, &workQueue_, i);
+      threads_[i] = std::thread(GetWork, &workQueue_, i, kvstore);
       printf("created thread %d\n", i);
     }
   }
@@ -138,7 +140,7 @@ class ThreadPool {
   }
 
 
-  void AddTask(void *data) {
+  void AddWork(void *data) {
     workQueue_.AddWork(data);
   }
 
@@ -152,8 +154,8 @@ class ThreadPool {
     return workQueue_.HasWork();
   }
 
-  void SetDataProcessor(DataProcessor p) {
-    processor_ = p;
+  void SetKVStore(KVStore* kvstore) {
+    kvstore_ = kvstore;
   }
 
  private:
@@ -161,6 +163,7 @@ class ThreadPool {
   int numberThreads_;
   WorkQueue workQueue_;
   // TODO: define a function to process each piece of data.
+  KVStore *kvstore_;
 
   DataProcessor processor_;
 
