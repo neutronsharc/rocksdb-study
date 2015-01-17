@@ -17,8 +17,10 @@
 #include "rocksdb/options.h"
 
 #include "threadpool.h"
+#include "kvinterface.h"
 
 using namespace std;
+
 
 struct WorkerTask {
   // worker thread ID
@@ -190,6 +192,10 @@ void Worker(WorkerTask *task) {
   }
 
   sem_post(&task->sem_end); printf("task %d finished read...\n", task->id);
+
+}
+
+void TryThreadPool() {
 
 }
 

@@ -19,6 +19,9 @@
 
 using namespace std;
 
+// Function that handles an item from the work queue.
+typedef void (*DataProcessor)(void*);
+
 // Base class for Tasks
 // run() should be overloaded and expensive calculations done there.
 // showTask() is for debugging and can be deleted if not used
@@ -98,13 +101,17 @@ class WorkQueue {
   pthread_cond_t cond_;
 };
 
-static void GetWork(void *p, int id) {
+void GetWork(void *p, int id) {
   void *data;
   WorkQueue *wq = (WorkQueue*)p;
   printf("thread %d started...\n", id);
   while (data = wq->GetNext()) {
     printf("thread %d got data %ld\n", id, (long)data);
+    // TODO: call processor to handle it.
     sleep(1);
+    /*if (processor_ != NULL) {
+      (*processor_)(data);
+    }*/
   }
   printf("thread %d stopped...\n", id);
 }
@@ -130,6 +137,7 @@ class ThreadPool {
     delete [] threads_;
   }
 
+
   void AddTask(void *data) {
     workQueue_.AddWork(data);
   }
@@ -144,11 +152,17 @@ class ThreadPool {
     return workQueue_.HasWork();
   }
 
+  void SetDataProcessor(DataProcessor p) {
+    processor_ = p;
+  }
+
  private:
   std::thread *threads_;
   int numberThreads_;
   WorkQueue workQueue_;
   // TODO: define a function to process each piece of data.
+
+  DataProcessor processor_;
 
 
 };

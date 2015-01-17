@@ -5,7 +5,7 @@ ROCKSDB = /home/shawn/code/rocksdb
 
 all: rdbtest
 
-rdbtest : rdbtest.cc threadpool.h
+rdbtest : rdbtest.cc threadpool.h kvinterface.h  kvinterface.cc
 	g++ -std=c++11 -g $^ -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2
 
 .c.o:
