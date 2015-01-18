@@ -4,11 +4,17 @@
 #include "stdio.h"
 #include "stddef.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum {
   GET = 0,
   PUT = 1,
   DELETE = 2,
 };
+
+extern const char* KVCmdName[];
 
 typedef struct KVRequest KVRequest;
 
@@ -29,16 +35,20 @@ struct KVRequest {
 };
 
 // Open the DB
-void* OpenDB(char* dbPath, int pathLen);
+extern void* OpenDB(char* dbPath, int pathLen);
 
 // Open the DB
-void CloseDB(void* dbHandler);
+extern void CloseDB(void* dbHandler);
 
 // Run the requests, block until the rqsts finished,
-int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest);
+extern int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest);
 
-void DumpKVRequest(KVRequest* p);
+extern void DumpKVRequest(KVRequest* p);
 
 //unsigned long time_microsec();
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif  // __KVINTERFACE__
