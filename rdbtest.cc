@@ -195,6 +195,33 @@ void Worker(WorkerTask *task) {
 
 }
 
+void TryKVInterface(string &dbpath, int numThreads) {
+  void* hdl = OpenDB(dbpath.c_str(), numThreads);
+
+  char key1[128], key2[128];
+  char charvalue[1024];
+  KVRequest write[2];
+
+  sprintf(key1, "key-1");
+  write[0].key = key1;
+  write[0].keylen = 5;;
+  write[0].type = PUT;
+  sprintf(charvalue, "value-1");
+  write[0].value = charvalue;
+  write[0].vlen = strlen(charvalue);
+
+  sprintf(key2, "key-2");
+  write[1].key = key2;
+  write[1].keylen = 5;;
+  write[1].type = PUT;
+  sprintf(charvalue + 64, "value-2");
+  write[1].value = charvalue + 64;
+  write[1].vlen = strlen(charvalue + 64);
+
+  assert(KVRunCommand(hdl, write, 2) == 2);
+
+  CloseDB(hdl);
+}
 
 void TryRocksDB(string &dbpath, int numThreads) {
   RocksDBInterface rdb;
@@ -207,27 +234,31 @@ void TryRocksDB(string &dbpath, int numThreads) {
   KVRequest write;
   write.type = PUT;
 
-  KVRequest read;
-  read.type = GET;
-
   sprintf(key, "key-1");
   write.key = key;
   write.keylen = strlen(key);
 
   sprintf(charvalue, "value-%d", 10);
   memset(charvalue + strlen(charvalue), 'A', 1024 - strlen(charvalue));
-  charvalue[1023] = 0;
+  charvalue[10] = 0;
+  charvalue[1022] = '\r';
+  charvalue[1023] = '\n';
   write.value = charvalue;
-  write.vlen = strlen(charvalue);
+  write.vlen = 1023; //strlen(charvalue);
 
-  rdb.PostRequest(&write);
+  //rdb.PostRequest(&write);
+  rdb.ProcessRequest(&write);
 
-  sleep(1);
 
+  KVRequest read;
+  read.type = GET;
   read.key = key;
   read.keylen = strlen(key);
-  rdb.PostRequest(&read);
-
+  rdb.ProcessRequest(&read);
+  printf("get value = %s\n", read.value);
+  assert(read.vlen == write.vlen);
+  assert(memcmp(charvalue, read.value, read.vlen) == 0);
+  free(read.value);
 }
 
 void TryThreadPool() {
@@ -252,7 +283,8 @@ int main(int argc, char** argv) {
   int numTasks = atoi(argv[3]);
 
   //TryThreadPool();
-  TryRocksDB(kDBPath, numTasks);
+  //TryRocksDB(kDBPath, numTasks);
+  TryKVInterface(kDBPath, numTasks);
   return 0;
 
 

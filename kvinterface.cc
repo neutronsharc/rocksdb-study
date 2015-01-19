@@ -5,6 +5,8 @@
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
 
+#include "debug.h"
+
 const char* KVCmdName[] = {
   "GET",
   "PUT",
@@ -24,7 +26,7 @@ void DumpKVRequest(KVRequest* p) {
   }
 }
 
-void* OpenDB(char* dbPath, int pathLen) {
+void* OpenDB(const char* dbPath, int pathLen) {
   RocksDBInterface *rdb = new RocksDBInterface();
   rdb->OpenDB(dbPath, pathLen);
   return (void*)rdb;
@@ -37,6 +39,24 @@ void CloseDB(void* dbHandler) {
 
 // Run the requests, block until the rqsts finished,
 int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest) {
+  if (numRequest <= 0) {
+    err("number of requests = %d\n", numRequest);
+    return 0;
+  }
+
   RocksDBInterface *rdb = (RocksDBInterface*)dbHandler;
+  if (numRequest == 1) {
+    request->userdata = NULL;
+    rdb->ProcessRequest(request);
+  } else {
+    MultiCompletion comp(numRequest);
+    for (int i = 0; i < numRequest; i++) {
+      (request + i)->userdata = (void*)&comp;
+      rdb->PostRequest(request + i);
+      dbg("posted rqst %d\n", i);
+    }
+    // TODO: wait for these requests to complete.
+    comp.WaitForCompletion();
+  }
   return numRequest;
 }

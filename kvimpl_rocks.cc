@@ -16,6 +16,7 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
 
+#include "debug.h"
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
 
@@ -80,21 +81,20 @@ bool RocksDBInterface::OpenDB(const char* dbPath, int numIOThreads) {
   return true;
 }
 
+// Process the given request in sync way.
 bool RocksDBInterface::ProcessRequest(KVRequest* request) {
   DumpKVRequest(request);
   switch (request->type) {
   case GET:
     return Get(request);
-    break;
   case PUT:
     return Put(request);
-    break;
   case DELETE:
-    break;
+    return Delete(request);
   default:
-    printf("unknown rqst\n");
+    err("unknown rqst\n");
   }
-  printf("have processed rqsts\n");
+  dbg("have processed rqsts\n");
   return true;
 }
 
@@ -102,19 +102,43 @@ bool RocksDBInterface::Get(KVRequest*  p)  {
   string value;
   rocksdb::Status status = db_->Get(readOptions_, p->key, &value);
   assert(status.ok());
-  printf("key %s: get value %s\n", p->key, value.c_str());
+  p->vlen = value.length();
+  p->value = (char*)malloc(p->vlen);
+  if (!p->value) {
+    err("key %s: fail to malloc %d bytes\n", p->vlen);
+    return false;
+  }
+  memcpy(p->value, value.data(), p->vlen);
+  dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, value.c_str());
+  // Send completion signal.
+  if (p->userdata) {
+    MultiCompletion* comp = (MultiCompletion*)p->userdata;
+    comp->AddFinish();
+  }
   return true;
 }
 
 bool RocksDBInterface::Put(KVRequest*  p)  {
-  //t1 = time_microsec();
-  rocksdb::Status status = db_->Put(writeOptions_, p->key, p->value);
-  //t2 = time_microsec();
-  //task->writeLatency[i] = t2 - t1;
+  rocksdb::Slice key(p->key, p->keylen);
+  rocksdb::Slice value(p->value, p->vlen);
+  rocksdb::Status status = db_->Put(writeOptions_, key, value);
+  dbg("key %s: put value %s\n", p->key, p->value);
   assert(status.ok());
+  if (p->userdata) {
+    MultiCompletion* comp = (MultiCompletion*)p->userdata;
+    comp->AddFinish();
+  }
   return true;
 }
 
 bool RocksDBInterface::Delete(KVRequest*  p) {
-  return true; }
+  rocksdb::Status status = db_->Delete(writeOptions_, p->key);
+  dbg("delete key %s: ret = %s\n", p->key, status.ToString().c_str());
+  assert(status.ok());
+  if (p->userdata) {
+    MultiCompletion* comp = (MultiCompletion*)p->userdata;
+    comp->AddFinish();
+  }
+  return true;
+}
 

@@ -19,9 +19,10 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
 
-#include "threadpool.h"
 #include "kvinterface.h"
 #include "kvstore.h"
+#include "multi_completion.h"
+#include "threadpool.h"
 
 using namespace std;
 
