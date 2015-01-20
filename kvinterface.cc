@@ -20,7 +20,8 @@ const char* KVCmdName[] = {
 
 void DumpKVRequest(KVRequest* p) {
   if (p->type <= DELETE) {
-    printf("KV cmd type = %s\n", KVCmdName[p->type]);
+    printf("KV cmd type = %s, key \"%s\", keylen %d\n",
+           KVCmdName[p->type], p->key, p->keylen);
   } else {
     printf("Unknown KV cmd type = %d\n", p->type);
   }
@@ -46,13 +47,14 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest) {
 
   RocksDBInterface *rdb = (RocksDBInterface*)dbHandler;
   if (numRequest == 1) {
-    request->userdata = NULL;
+    request->reserved = NULL;
     rdb->ProcessRequest(request);
   } else {
     MultiCompletion comp(numRequest);
     for (int i = 0; i < numRequest; i++) {
-      (request + i)->userdata = (void*)&comp;
-      rdb->PostRequest(request + i);
+      KVRequest *q = request + i;
+      q->reserved = (void*)&comp;
+      rdb->PostRequest(q);
       dbg("posted rqst %d\n", i);
     }
     // TODO: wait for these requests to complete.

@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <assert.h>
 
-#define MYDBG 1
+#define MYDBG 0
 
 #if MYDBG
 

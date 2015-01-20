@@ -14,6 +14,14 @@ enum {
   DELETE = 2,
 };
 
+// KV request return code
+enum {
+  SUCCESS = 0,
+  FAILURE = 1,
+  NOT_EXIST = 2,
+  NO_MEM = 3,
+};
+
 extern const char* KVCmdName[];
 
 typedef struct KVRequest KVRequest;
@@ -29,8 +37,10 @@ struct KVRequest {
   char *value;
   size_t vlen;
 
+  int retcode;
+
   // Some special purpose data passed by the caller.
-  void* userdata;
+  void* reserved;
 
 };
 

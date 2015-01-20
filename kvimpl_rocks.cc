@@ -23,7 +23,7 @@
 
 static void ProcessOneRequest(void* p) {
     KVRequest* request = (KVRequest*)p;
-    DumpKVRequest(request);
+    //DumpKVRequest(request);
     switch (request->type) {
     case GET:
       break;
@@ -83,7 +83,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath, int numIOThreads) {
 
 // Process the given request in sync way.
 bool RocksDBInterface::ProcessRequest(KVRequest* request) {
-  DumpKVRequest(request);
+  //DumpKVRequest(request);
   switch (request->type) {
   case GET:
     return Get(request);
@@ -92,7 +92,13 @@ bool RocksDBInterface::ProcessRequest(KVRequest* request) {
   case DELETE:
     return Delete(request);
   default:
-    err("unknown rqst\n");
+    err("unknown rqst: \n");
+    DumpKVRequest(request);
+    request->retcode = FAILURE;
+    if (request->reserved) {
+      MultiCompletion* comp = (MultiCompletion*)request->reserved;
+      comp->AddFinish();
+    }
   }
   dbg("have processed rqsts\n");
   return true;
@@ -101,18 +107,24 @@ bool RocksDBInterface::ProcessRequest(KVRequest* request) {
 bool RocksDBInterface::Get(KVRequest*  p)  {
   string value;
   rocksdb::Status status = db_->Get(readOptions_, p->key, &value);
-  assert(status.ok());
-  p->vlen = value.length();
-  p->value = (char*)malloc(p->vlen);
-  if (!p->value) {
-    err("key %s: fail to malloc %d bytes\n", p->vlen);
-    return false;
+  if (status.ok()) {
+    p->vlen = value.length();
+    p->value = (char*)malloc(p->vlen);
+    if (!p->value) {
+      err("key %s: fail to malloc %d bytes\n", p->vlen);
+      p->retcode = NO_MEM;
+    } else {
+      memcpy(p->value, value.data(), p->vlen);
+      dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, value.c_str());
+      p->retcode = SUCCESS;
+    }
+  } else {
+    err("key %s not exist\n", p->key);
+    p->retcode = NOT_EXIST;
   }
-  memcpy(p->value, value.data(), p->vlen);
-  dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, value.c_str());
   // Send completion signal.
-  if (p->userdata) {
-    MultiCompletion* comp = (MultiCompletion*)p->userdata;
+  if (p->reserved) {
+    MultiCompletion* comp = (MultiCompletion*)p->reserved;
     comp->AddFinish();
   }
   return true;
@@ -123,9 +135,13 @@ bool RocksDBInterface::Put(KVRequest*  p)  {
   rocksdb::Slice value(p->value, p->vlen);
   rocksdb::Status status = db_->Put(writeOptions_, key, value);
   dbg("key %s: put value %s\n", p->key, p->value);
-  assert(status.ok());
-  if (p->userdata) {
-    MultiCompletion* comp = (MultiCompletion*)p->userdata;
+  if (status.ok()) {
+    p->retcode = SUCCESS;
+  } else {
+    p->retcode = FAILURE;
+  }
+  if (p->reserved) {
+    MultiCompletion* comp = (MultiCompletion*)p->reserved;
     comp->AddFinish();
   }
   return true;
@@ -134,9 +150,13 @@ bool RocksDBInterface::Put(KVRequest*  p)  {
 bool RocksDBInterface::Delete(KVRequest*  p) {
   rocksdb::Status status = db_->Delete(writeOptions_, p->key);
   dbg("delete key %s: ret = %s\n", p->key, status.ToString().c_str());
-  assert(status.ok());
-  if (p->userdata) {
-    MultiCompletion* comp = (MultiCompletion*)p->userdata;
+  if (status.ok()) {
+  } else {
+    err("delete key %s failed\n", p->key);
+  }
+  p->retcode = SUCCESS;
+  if (p->reserved) {
+    MultiCompletion* comp = (MultiCompletion*)p->reserved;
     comp->AddFinish();
   }
   return true;
