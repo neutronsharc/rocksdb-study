@@ -196,7 +196,7 @@ void Worker(WorkerTask *task) {
 }
 
 void TryKVInterface(string &dbpath, int numThreads) {
-  void* hdl = OpenDB(dbpath.c_str(), numThreads);
+  void* hdl = OpenDB(dbpath.c_str(), numThreads, 500);
 
   char key1[128], key2[128];
   char charvalue[1024];

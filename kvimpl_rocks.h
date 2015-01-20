@@ -39,7 +39,7 @@ class RocksDBInterface : public KVStore {
     }
   }
 
-  bool OpenDB(const char* dbPath, int numIOThreads);
+  bool OpenDB(const char* dbPath, int numIOThreads, int blockCacheMB);
 
   void PostRequest(KVRequest* p) {
     threadPool_->AddWork(p);

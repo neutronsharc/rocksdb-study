@@ -36,7 +36,9 @@ static void ProcessOneRequest(void* p) {
     }
 }
 
-bool RocksDBInterface::OpenDB(const char* dbPath, int numIOThreads) {
+bool RocksDBInterface::OpenDB(const char* dbPath,
+                              int numIOThreads,
+                              int blockCacheMB) {
   // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
   options_.IncreaseParallelism();
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
@@ -46,7 +48,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath, int numIOThreads) {
 
   // point lookup: will create hash index, 10-bits bloom filter,
   // a block-cache of this size in MB, 4KB block size,
-  unsigned long block_cache_mb = 256;
+  unsigned long block_cache_mb = blockCacheMB;
   options_.OptimizeForPointLookup(block_cache_mb);
 
   // create the DB if it's not already present
@@ -55,7 +57,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath, int numIOThreads) {
   options_.allow_os_buffer = false;
   options_.write_buffer_size = 1024L * 1024 * 4;
   options_.max_write_buffer_number = 200;
-  options_.min_write_buffer_number_to_merge = 2;
+  options_.min_write_buffer_number_to_merge = 1;
   options_.compression = rocksdb::kNoCompression;
 
   writeOptions_.disableWAL = true;
