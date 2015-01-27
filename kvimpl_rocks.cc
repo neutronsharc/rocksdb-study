@@ -59,6 +59,10 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   options_.max_write_buffer_number = 200;
   options_.min_write_buffer_number_to_merge = 1;
   options_.compression = rocksdb::kNoCompression;
+  //options_.disable_auto_compactions = true;
+  // adjust max-background compactions.
+  options_.max_background_compactions = 1;
+  options_.max_background_flushes = 4;
 
   writeOptions_.disableWAL = true;
 

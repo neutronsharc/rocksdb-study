@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "rocksdb/db.h"
+#include "rocksdb/env.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
 
@@ -56,7 +57,14 @@ struct WorkerTask {
   mutex *outputLock;
 };
 
-string kDBPath = "/ssd/test/rocks";
+
+string dbPath;
+bool doWrite = false;
+bool doRead = false;
+int numThreads = 1;
+int objSize = 1000;
+long numObjs = 1000;
+long dbCacheMB = 256;
 
 unsigned long time_microsec() {
   struct timespec t;
@@ -85,6 +93,9 @@ unsigned long get_random(unsigned long max_val) {
 }
 
 void PrintStats(int *latency, int size, const char *header) {
+  int lat_min = latency[0];
+  int lat_10 = latency[(int)(size * 0.1)];
+  int lat_20 = latency[(int)(size * 0.2)];
   int lat_50 = latency[(int)(size * 0.5)];
   int lat_90 = latency[(int)(size * 0.9)];
   int lat_95 = latency[(int)(size * 0.95)];
@@ -92,13 +103,19 @@ void PrintStats(int *latency, int size, const char *header) {
   int lat_999 = latency[(int)(size * 0.999)];
   int lat_max = latency[size - 1];
   cout << header << endl;
-  cout << setw(15) << "50 %"
+  cout << setw(15) << "min"
+       << setw(15) << "10 %"
+       << setw(15) << "20 %"
+       << setw(15) << "50 %"
        << setw(15) << "90 %"
        << setw(15) << "95 %"
        << setw(15) << "99 %"
        << setw(15) << "99.9 %"
        << setw(15) << "max" << endl;
-  cout << setw(15) << lat_50 / 1000.0
+  cout << setw(15) << lat_min / 1000.0
+       << setw(15) << lat_10 / 1000.0
+       << setw(15) << lat_20 / 1000.0
+       << setw(15) << lat_50 / 1000.0
        << setw(15) << lat_90 / 1000.0
        << setw(15) << lat_95 / 1000.0
        << setw(15) << lat_99 / 1000.0
@@ -135,7 +152,7 @@ void Worker(WorkerTask *task) {
       t2 = time_microsec();
       task->writeLatency[i] = t2 - t1;
       assert(status.ok());
-      if ((i + 1) % 100000 == 0) {
+      if ((i + 1) % 1000000 == 0) {
         printf("task %d: write %d \n", task->id, i + 1);
       }
     }
@@ -175,7 +192,7 @@ void Worker(WorkerTask *task) {
       sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
       assert(rid == task->id);
       assert(rval == (int)objID);
-      if ((i + 1) % 100000 == 0) {
+      if ((i + 1) % 1000000 == 0) {
         printf("task %d: read %d \n", task->id, i + 1);
       }
     }
@@ -195,8 +212,8 @@ void Worker(WorkerTask *task) {
 
 }
 
-void TryKVInterface(string &dbpath, int numThreads) {
-  void* hdl = OpenDB(dbpath.c_str(), numThreads, 500);
+void TryKVInterface(string &dbpath, int numThreads, int cacheMB) {
+  void* hdl = OpenDB(dbpath.c_str(), numThreads, cacheMB);
 
   char key1[128], key2[128];
   char charvalue[1024];
@@ -223,9 +240,9 @@ void TryKVInterface(string &dbpath, int numThreads) {
   CloseDB(hdl);
 }
 
-void TryRocksDB(string &dbpath, int numThreads) {
+void TryRocksDB(string &dbpath, int numThreads, int cacheMB) {
   RocksDBInterface rdb;
-  assert(rdb.OpenDB(dbpath.c_str(), numThreads) == true);
+  assert(rdb.OpenDB(dbpath.c_str(), numThreads, cacheMB) == true);
 
   char key[128];
   char charvalue[1024];
@@ -271,21 +288,79 @@ void TryThreadPool() {
   delete pool;
 }
 
-int main(int argc, char** argv) {
+void help() {
+  printf("Test RocksDB raw performance, mixed r/w ratio: \n");
+  printf("parameters: \n");
+  printf("-p <dbpath>    : rocksdb path\n");
+  printf("-w             : re-write entire DB before test.\n");
+  printf("-r             : perform read benchmark.\n");
+  printf("-s <N>         : object size. Def = 1000\n");
+  printf("-n <N>         : total number of objs. Def = 1000\n");
+  printf("-t <N>         : number of threads to run. Def = 1\n");
+  printf("-c <N>         : DB cache in MB. Def = 256\n");
+  printf("-h             : this message\n");
+}
 
-  if (argc < 3) {
-    printf("usage: %s [do write 1/0] [do read 1/0] [num of threads]\n");
-    return -1;
+
+int main(int argc, char** argv) {
+  if (argc == 1) {
+    help();
+    return 0;
   }
 
-  bool doWrite = atoi(argv[1]) == 0 ? false : true;
-  bool doRead = atoi(argv[2]) == 0 ? false : true;
-  int numTasks = atoi(argv[3]);
+  int c;
+  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:")) != EOF) {
+    switch(c) {
+      case 'h':
+        help();
+        return 0;
+      case 'p':
+        dbPath = optarg;
+        printf("db path : %s\n", optarg);
+        break;
+      case 'w':
+        doWrite = true;
+        printf("will re-write all before test.\n");
+        break;
+      case 'r':
+        doRead = true;
+        printf("will run read test.\n");
+        break;
+      case 's':
+        objSize = atoi(optarg);
+        printf("object size = %d\n", objSize);
+        break;
+      case 'n':
+        numObjs = atol(optarg);
+        printf("total number of objects = %d\n", numObjs);
+        break;
+      case 't':
+        numThreads = atoi(optarg);
+        printf("will use %d threads\n", numThreads);
+        break;
+      case 'c':
+        dbCacheMB = atoi(optarg);
+        printf("will use %d MB cache\n", dbCacheMB);
+        break;
+      case '?':
+        help();
+        return 0;
+      default:
+        help();
+        return 0;
+    }
+  }
+  if (optind < argc) {
+    help();
+    return 0;
+  }
+
+  int numTasks = numThreads;
 
   //TryThreadPool();
-  //TryRocksDB(kDBPath, numTasks);
-  TryKVInterface(kDBPath, numTasks);
-  return 0;
+  //TryRocksDB(kDBPath, numTasks, cacheMB);
+  //TryKVInterface(kDBPath, numTasks, cacheMB);
+  //return 0;
 
 
   // Prepare general DB options.
@@ -295,21 +370,36 @@ int main(int argc, char** argv) {
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
   //   def to 512 MB memtable
   options.OptimizeLevelStyleCompaction();
-  //options.OptimizeUniversalStyleCompaction();
+  //options.OptimizeUniversalStyleCompaction(1024L*1024*1024*4);
+
+  rocksdb::Env *env = rocksdb::Env::Default();
+  int threadsInLow = numThreads;
+  int threadsInHigh = numThreads * 2;
+  // Low thread pool for compaction
+  env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
+  // High thread pool for flushing memtable.
+  //env->SetBackgroundThreads(numThreads, rocksdb::Env::Priority::HIGH);
 
   // point lookup: will create hash index, 10-bits bloom filter,
   // a block-cache of this size in MB, 4KB block size,
-  unsigned long block_cache_mb = 256;
+  unsigned long block_cache_mb = dbCacheMB;
   options.OptimizeForPointLookup(block_cache_mb);
 
   // create the DB if it's not already present
   options.create_if_missing = true;
-  options.max_open_files = 4096;
-  options.allow_os_buffer = false;
-  options.write_buffer_size = 1024L * 1024 * 4;
-  options.max_write_buffer_number = 200;
-  options.min_write_buffer_number_to_merge = 2;
+  //options.max_open_files = 4096;
+  //options.allow_os_buffer = false;
+  //options.write_buffer_size = 1024L * 1024 * 4;
+  //options.max_write_buffer_number = 200;
+  //options.min_write_buffer_number_to_merge = 1;
   options.compression = rocksdb::kNoCompression;
+  //options.max_background_compactions = threadsInLow * 2;
+  //options.max_background_flushes = numThreads;
+  options.env = env;
+  //options.soft_rate_limit = 0.5;
+  //options.hard_rate_limit = 1.1;
+  //options.disable_auto_compactions = true;
+
 
   rocksdb::WriteOptions writeOptions;
   writeOptions.disableWAL = true;
@@ -323,9 +413,10 @@ int main(int argc, char** argv) {
   mutex outputLock;
 
   // open DB
-  cout << "will run " << numTasks << " threads on DB " << kDBPath << endl;
+  //vector<ColumnFamilyDescriptor>& columnFamilies
+  cout << "will run " << numTasks << " threads on DB " << dbPath << endl;
   rocksdb::DB* db;
-  rocksdb::Status s = rocksdb::DB::Open(options, kDBPath, &db);
+  rocksdb::Status s = rocksdb::DB::Open(options, dbPath, &db);
   assert(s.ok());
 
   struct timespec tbegin, tend;
@@ -342,7 +433,7 @@ int main(int argc, char** argv) {
   //assert(s.ok());
 
   // seq write objs.
-  int numObjs = 1000 * 1000 * 60;
+  //int numObjs = 1000 * 1000 * 60;
   int writeObjCount = numObjs;
   int readObjCount = numObjs;
 
@@ -394,7 +485,8 @@ int main(int argc, char** argv) {
     sort(writeLatency, writeLatency + writeObjCount);
     printf("Overall write IOPS = %f\n", writeObjCount / (timeTotal / 1000000.0));
     PrintStats(writeLatency, writeObjCount, "\nOverall write latency in ms");
-    sleep(10);
+    printf("\nwait for background activities to settle...\n");
+    sleep(30);
   }
 
   // start worker to read.
