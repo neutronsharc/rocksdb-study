@@ -38,6 +38,9 @@ struct WorkerTask {
   unsigned long writeFailures;
   unsigned long readFailures;
 
+  // Target qps issued by this worker.
+  unsigned long targetQPS;
+
   // ratio of write ops, 0.0 ~ 1.0. Main thread will set this value.
   double writeRatio;
 
@@ -63,8 +66,9 @@ bool doWrite = false;
 bool doRead = false;
 int numThreads = 1;
 int objSize = 1000;
-long numObjs = 1000;
-long dbCacheMB = 256;
+long numObjs = 1000L;
+long dbCacheMB = 256L;
+long totalTargetQPS = 10000L;
 
 unsigned long time_microsec() {
   struct timespec t;
@@ -155,6 +159,13 @@ void Worker(WorkerTask *task) {
       if ((i + 1) % 1000000 == 0) {
         printf("task %d: write %d \n", task->id, i + 1);
       }
+      // Throttle to target QPS.
+      unsigned long actualSpentTime = time_microsec() - tBeginUs;
+      unsigned long targetSpentTime =
+        (unsigned long)((i + 1.0) * 1000000 / task->targetQPS);
+      if (actualSpentTime < targetSpentTime) {
+        usleep(targetSpentTime - actualSpentTime);
+      }
     }
     tEndUs = time_microsec();
     printf("task %d finished write ...\n", task->id);
@@ -194,6 +205,13 @@ void Worker(WorkerTask *task) {
       assert(rval == (int)objID);
       if ((i + 1) % 1000000 == 0) {
         printf("task %d: read %d \n", task->id, i + 1);
+      }
+      // Throttle to target QPS.
+      unsigned long actualSpentTime = time_microsec() - tBeginUs;
+      unsigned long targetSpentTime =
+        (unsigned long)((i + 1.0) * 1000000 / task->targetQPS);
+      if (actualSpentTime < targetSpentTime) {
+        usleep(targetSpentTime - actualSpentTime);
       }
     }
     tEndUs = time_microsec();
@@ -291,14 +309,15 @@ void TryThreadPool() {
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
-  printf("-p <dbpath>    : rocksdb path\n");
-  printf("-w             : re-write entire DB before test.\n");
-  printf("-r             : perform read benchmark.\n");
-  printf("-s <N>         : object size. Def = 1000\n");
-  printf("-n <N>         : total number of objs. Def = 1000\n");
-  printf("-t <N>         : number of threads to run. Def = 1\n");
-  printf("-c <N>         : DB cache in MB. Def = 256\n");
-  printf("-h             : this message\n");
+  printf("-p <dbpath>          : rocksdb path\n");
+  printf("-w                   : re-write entire DB before test.\n");
+  printf("-r                   : perform read benchmark.\n");
+  printf("-s <obj size>        : object size. Def = 1000\n");
+  printf("-n <num of objs>     : total number of objs. Def = 1000\n");
+  printf("-t <num of threads>  : number of threads to run. Def = 1\n");
+  printf("-c <DB cache>        : DB cache in MB. Def = 256\n");
+  printf("-q <QPS>             : Total target QPS. Def = 10000 op/sec\n");
+  printf("-h                   : this message\n");
 }
 
 
@@ -309,7 +328,7 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:")) != EOF) {
+  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -341,6 +360,10 @@ int main(int argc, char** argv) {
       case 'c':
         dbCacheMB = atoi(optarg);
         printf("will use %d MB cache\n", dbCacheMB);
+        break;
+      case 'q':
+        totalTargetQPS = atol(optarg);
+        printf("total target QPS = %d\n", totalTargetQPS);
         break;
       case '?':
         help();
@@ -454,6 +477,7 @@ int main(int argc, char** argv) {
     tasks[i].numReads = perTaskRead;
     tasks[i].writeLatency = writeLatency + perTaskWrite * i;
     tasks[i].readLatency = readLatency + perTaskRead* i;
+    tasks[i].targetQPS = totalTargetQPS / numTasks;
 
     sem_init(&tasks[i].sem_begin, 0, 0);
     sem_init(&tasks[i].sem_end, 0, 0);
