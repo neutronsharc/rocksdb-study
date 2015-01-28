@@ -27,9 +27,9 @@ void DumpKVRequest(KVRequest* p) {
   }
 }
 
-void* OpenDB(const char* dbPath, int pathLen, int cacheMB) {
+void* OpenDB(const char* dbPath, int numIOThreads, int cacheMB) {
   RocksDBInterface *rdb = new RocksDBInterface();
-  rdb->OpenDB(dbPath, pathLen, cacheMB);
+  rdb->OpenDB(dbPath, numIOThreads, cacheMB);
   return (void*)rdb;
 }
 

@@ -62,8 +62,8 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   options_.create_if_missing = true;
   options_.max_open_files = 4096;
   //options_.allow_os_buffer = false;
-  //options_.write_buffer_size = 1024L * 1024 * 256;
-  //options_.max_write_buffer_number = 200;
+  options_.write_buffer_size = 1024L * 1024 * 128;
+  options_.max_write_buffer_number = 16;
 
   // Default write-buffer size = 128MB, generally we want
   // wb-szie * min-wb-to-merge * l0-file-num equal-to L1 file size
