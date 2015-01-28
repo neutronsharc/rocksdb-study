@@ -49,6 +49,8 @@ class RocksDBInterface : public KVStore {
 
   bool Get(KVRequest*  p);
 
+  bool MultiGet(KVRequest* requests, int numRequests);
+
   bool Put(KVRequest*  p);
 
   bool Delete(KVRequest*  p);

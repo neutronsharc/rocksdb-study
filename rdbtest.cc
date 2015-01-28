@@ -67,8 +67,11 @@ bool doRead = false;
 int numThreads = 1;
 int objSize = 1000;
 long numObjs = 1000L;
-long dbCacheMB = 256L;
+long dbCacheMB = 1024L;
 long totalTargetQPS = 10000L;
+int numKeysPerRead = 4;
+
+vector<rocksdb::ColumnFamilyHandle*> familyHandles;
 
 unsigned long time_microsec() {
   struct timespec t;
@@ -184,25 +187,57 @@ void Worker(WorkerTask *task) {
 
   sem_wait(&task->sem_begin);
   printf("worker %d started read...\n", task->id);
+  char keys[1000][1000];
 
   if (task->doRead) {
     printf("worker %d will do %d reads ...\n", task->id, task->numReads);
     tBeginUs = time_microsec();
     for (int i = 0; i < task->numReads; i++) {
-      unsigned long objID = get_random(task->numWrites);
-      sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
+      if (numKeysPerRead > 1) {
+        vector<rocksdb::Slice> keySlices;
+        vector<string> values;
+        t1 = time_microsec();
+        for (int k = 0; k < numKeysPerRead; k++) {
+          unsigned long objID = get_random(task->numWrites);
+          sprintf(keys[k], "task-%d-key-%d", task->id, (int)(objID));
+          keySlices.push_back(
+            rocksdb::Slice(keys[k], strlen(keys[k])));
+        }
+        vector<rocksdb::Status> rets = task->db->MultiGet(task->readOptions,
+                                                          keySlices,
+                                                          &values);
+        t2 = time_microsec();
+        task->readLatency[i] = t2 - t1;
+        for (int k = 0; k < numKeysPerRead; k++) {
+          if (!rets[k].ok()) {
+            printf("failed to get key %s: ret = %s\n", keys[k],
+                rets[k].ToString().c_str());
+            continue;
+          }
+          assert(values[k].length() == 1023);
+          int tidAtKey, vidAtKey, tidAtValue, vidAtValue;
+          sscanf(keys[k], "task-%d-key-%d", &tidAtKey, &vidAtKey);
+          sscanf(values[k].c_str(), "task-%d-value-%d", &tidAtValue, &vidAtValue);
+          assert(tidAtKey == task->id);
+          assert(tidAtKey == tidAtValue);
+          assert(vidAtKey == vidAtValue);
+        }
+      } else {
+        unsigned long objID = get_random(task->numWrites);
+        sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
 
-      string value;
-      t1 = time_microsec();
-      status = task->db->Get(task->readOptions, key, &value);
-      t2 = time_microsec();
-      task->readLatency[i] = t2 - t1;
-      assert(status.ok());
-      assert(value.length() == 1023);
-      int rid, rval;
-      sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
-      assert(rid == task->id);
-      assert(rval == (int)objID);
+        string value;
+        t1 = time_microsec();
+        status = task->db->Get(task->readOptions, key, &value);
+        t2 = time_microsec();
+        task->readLatency[i] = t2 - t1;
+        assert(status.ok());
+        assert(value.length() == 1023);
+        int rid, rval;
+        sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
+        assert(rid == task->id);
+        assert(rval == (int)objID);
+      }
       if ((i + 1) % 1000000 == 0) {
         printf("task %d: read %d \n", task->id, i + 1);
       }
@@ -317,6 +352,8 @@ void help() {
   printf("-t <num of threads>  : number of threads to run. Def = 1\n");
   printf("-c <DB cache>        : DB cache in MB. Def = 256\n");
   printf("-q <QPS>             : Total target QPS. Def = 10000 op/sec\n");
+  printf("-k <multiget keys>   : multi-get these number of keys in one get.\n"
+         "                       def = 8 keys\n");
   printf("-h                   : this message\n");
 }
 
@@ -328,7 +365,7 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:")) != EOF) {
+  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:k:")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -364,6 +401,10 @@ int main(int argc, char** argv) {
       case 'q':
         totalTargetQPS = atol(optarg);
         printf("total target QPS = %d\n", totalTargetQPS);
+        break;
+      case 'k':
+        numKeysPerRead = atoi(optarg);
+        printf("Multi-get size = %d\n", numKeysPerRead);
         break;
       case '?':
         help();
@@ -401,7 +442,7 @@ int main(int argc, char** argv) {
   // Low thread pool for compaction
   env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
   // High thread pool for flushing memtable.
-  //env->SetBackgroundThreads(numThreads, rocksdb::Env::Priority::HIGH);
+  env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
 
   // point lookup: will create hash index, 10-bits bloom filter,
   // a block-cache of this size in MB, 4KB block size,
@@ -410,14 +451,16 @@ int main(int argc, char** argv) {
 
   // create the DB if it's not already present
   options.create_if_missing = true;
-  //options.max_open_files = 4096;
+  options.max_open_files = 4096;
   //options.allow_os_buffer = false;
-  //options.write_buffer_size = 1024L * 1024 * 4;
+  //options.write_buffer_size = 1024L * 1024 * 256;
   //options.max_write_buffer_number = 200;
-  //options.min_write_buffer_number_to_merge = 1;
+  options.min_write_buffer_number_to_merge = 1;
+  options.level0_file_num_compaction_trigger = 4;
+
   options.compression = rocksdb::kNoCompression;
   //options.max_background_compactions = threadsInLow * 2;
-  //options.max_background_flushes = numThreads;
+  options.max_background_flushes = 2;
   options.env = env;
   //options.soft_rate_limit = 0.5;
   //options.hard_rate_limit = 1.1;
@@ -439,9 +482,29 @@ int main(int argc, char** argv) {
   //vector<ColumnFamilyDescriptor>& columnFamilies
   cout << "will run " << numTasks << " threads on DB " << dbPath << endl;
   rocksdb::DB* db;
-  rocksdb::Status s = rocksdb::DB::Open(options, dbPath, &db);
-  assert(s.ok());
+  rocksdb::Status s;
 
+#if 0
+  // Open normal DB
+  {
+  s = rocksdb::DB::Open(options, dbPath, &db);
+  assert(s.ok());
+  }
+#else
+  // Open DB with column-families for multi-get
+  {
+    vector<string> familyNames;
+    //s = rocksdb::DB::ListColumnFamilies(options, dbPath, &familyNames);
+    //assert(s.ok());
+    vector<rocksdb::ColumnFamilyDescriptor> descriptors;
+    descriptors.push_back(rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName,
+                                                          options));
+    //vector<rocksdb::ColumnFamilyHandle*> familyHandles;
+    s = rocksdb::DB::Open(options, dbPath, descriptors, &familyHandles, &db);
+    assert(s.ok());
+
+  }
+#endif
   struct timespec tbegin, tend;
   struct timespec objBegin, objEnd;
   long elapsedMicroSec = 0;
@@ -510,7 +573,7 @@ int main(int argc, char** argv) {
     printf("Overall write IOPS = %f\n", writeObjCount / (timeTotal / 1000000.0));
     PrintStats(writeLatency, writeObjCount, "\nOverall write latency in ms");
     printf("\nwait for background activities to settle...\n");
-    sleep(30);
+    sleep(3);
   }
 
   // start worker to read.

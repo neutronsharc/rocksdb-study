@@ -39,26 +39,39 @@ void CloseDB(void* dbHandler) {
 }
 
 // Run the requests, block until the rqsts finished,
-int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest) {
-  if (numRequest <= 0) {
-    err("number of requests = %d\n", numRequest);
+int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
+  if (numRequests <= 0) {
+    err("number of requests = %d\n", numRequests);
     return 0;
   }
 
   RocksDBInterface *rdb = (RocksDBInterface*)dbHandler;
-  if (numRequest == 1) {
+  if (numRequests == 1) {
     request->reserved = NULL;
     rdb->ProcessRequest(request);
   } else {
-    MultiCompletion comp(numRequest);
-    for (int i = 0; i < numRequest; i++) {
-      KVRequest *q = request + i;
-      q->reserved = (void*)&comp;
-      rdb->PostRequest(q);
-      dbg("posted rqst %d\n", i);
+    // Check if this is a multi-get.
+    bool allGet = true;
+    for (int i = 0; i < numRequests; i++) {
+      KVRequest *p = request + i;
+      if (p->type != GET) {
+        allGet = false;
+        break;
+      }
     }
-    // TODO: wait for these requests to complete.
-    comp.WaitForCompletion();
+    if (allGet) {
+      rdb->MultiGet(request, numRequests);
+    } else {
+      MultiCompletion comp(numRequests);
+      for (int i = 0; i < numRequests; i++) {
+        KVRequest *p = request + i;
+        p->reserved = (void*)&comp;
+        rdb->PostRequest(p);
+        dbg("posted rqst %d\n", i);
+      }
+      // TODO: wait for these requests to complete.
+      comp.WaitForCompletion();
+    }
   }
-  return numRequest;
+  return numRequests;
 }
