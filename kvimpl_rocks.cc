@@ -49,8 +49,8 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   options_.IncreaseParallelism();
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
   //   def to 512 MB memtable
-  options_.OptimizeLevelStyleCompaction();
-  //options_.OptimizeUniversalStyleCompaction();
+  //options_.OptimizeLevelStyleCompaction();
+  options_.OptimizeUniversalStyleCompaction();
 
   // point lookup: will create hash index, 10-bits bloom filter,
   // a block-cache of this size in MB, 4KB block size,
@@ -63,7 +63,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   options_.max_open_files = 4096;
   //options_.allow_os_buffer = false;
   options_.write_buffer_size = 1024L * 1024 * 128;
-  options_.max_write_buffer_number = 16;
+  options_.max_write_buffer_number = 64;
 
   // Default write-buffer size = 128MB, generally we want
   // wb-szie * min-wb-to-merge * l0-file-num equal-to L1 file size
@@ -71,7 +71,8 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   options_.min_write_buffer_number_to_merge = 1;
   options_.level0_file_num_compaction_trigger = 4;
 
-  options_.compression = rocksdb::kNoCompression;
+  //options_.compression = rocksdb::kNoCompression;
+  options_.compression = rocksdb::kSnappyCompression;
 
   //options_.disable_auto_compactions = true;
   //options_.max_background_compactions = 16;
