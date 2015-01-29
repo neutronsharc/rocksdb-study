@@ -68,7 +68,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   // Default write-buffer size = 128MB, generally we want
   // wb-szie * min-wb-to-merge * l0-file-num equal-to L1 file size
   // = (max_bytes_for_level_base)  = 512MB
-  options_.min_write_buffer_number_to_merge = 1;
+  options_.min_write_buffer_number_to_merge = 2;
   options_.level0_file_num_compaction_trigger = 4;
 
   //options_.compression = rocksdb::kNoCompression;
