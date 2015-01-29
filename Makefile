@@ -3,7 +3,7 @@ CXX = g++ -std=c++11
 ROCKSDB = /home/shawn/code/rocksdb
 CFLAGS = -g -I${ROCKSDB}/include
 CXXFLAGS = -g -I${ROCKSDB}/include
-LDFLAGS = -lpthread -lrt -lsnappy -lz -lbz2
+LDFLAGS = -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 .PHONY: clean
 
@@ -14,7 +14,7 @@ kvlib.a : kvinterface.o kvimpl_rocks.o
 #$(ROCKSDB)/librocksdb.a
 
 rdbtest : rdbtest.cc kvinterface.cc kvimpl_rocks.cc threadpool.h
-	g++ -std=c++11 -g $^ -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2
+	g++ -std=c++11 -g $^ -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 #.cpp.o:
 %.o : %.cpp

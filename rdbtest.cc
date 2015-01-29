@@ -2,6 +2,7 @@
 #include <semaphore.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <bsd/stdlib.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -68,7 +69,7 @@ int numThreads = 1;
 int objSize = 1000;
 long numObjs = 1000L;
 long dbCacheMB = 1024L;
-long totalTargetQPS = 10000L;
+long totalTargetQPS = 1000000L;
 int numKeysPerRead = 4;
 
 vector<rocksdb::ColumnFamilyHandle*> familyHandles;
@@ -150,12 +151,17 @@ void Worker(WorkerTask *task) {
     tBeginUs = time_microsec();
     for (int i = 0; i < task->numWrites; i++) {
       sprintf(key, "task-%d-key-%d", task->id, i);
+      arc4random_buf(charvalue, 1024);
       sprintf(charvalue, "task-%d-value-%d", task->id, i);
-      memset(charvalue + strlen(charvalue), 'A', 1024 - strlen(charvalue));
-      charvalue[1023] = 0;
+      charvalue[strlen(charvalue)] = ' ';
+      // memcached protocol requires '\r\n' at end of value.
+      charvalue[1022] = '\r';
+      charvalue[1023] = '\n';
+      rocksdb::Slice keyslice(key, strlen(key));
+      rocksdb::Slice valueslice(charvalue, 1024);
 
       t1 = time_microsec();
-      status = task->db->Put(task->writeOptions, key, charvalue);
+      status = task->db->Put(task->writeOptions, keyslice, valueslice);
       t2 = time_microsec();
       task->writeLatency[i] = t2 - t1;
       assert(status.ok());
@@ -344,16 +350,17 @@ void TryThreadPool() {
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
-  printf("-p <dbpath>          : rocksdb path\n");
-  printf("-w                   : re-write entire DB before test.\n");
-  printf("-r                   : perform read benchmark.\n");
+  printf("-p <dbpath>          : rocksdb path. Must provide.\n");
+  printf("-w                   : re-write entire DB before test. Def to not\n");
+  printf("-r                   : perform read benchmark. Def to not\n");
   printf("-s <obj size>        : object size. Def = 1000\n");
   printf("-n <num of objs>     : total number of objs. Def = 1000\n");
   printf("-t <num of threads>  : number of threads to run. Def = 1\n");
-  printf("-c <DB cache>        : DB cache in MB. Def = 256\n");
-  printf("-q <QPS>             : Total target QPS. Def = 10000 op/sec\n");
+  printf("-c <DB cache>        : DB cache in MB. Def = 1024\n");
+  printf("-q <QPS>             : Total target QPS by all threads. \n"
+         "                       Def = 1000000 op/sec\n");
   printf("-k <multiget keys>   : multi-get these number of keys in one get.\n"
-         "                       def = 8 keys\n");
+         "                       def = 4 keys\n");
   printf("-h                   : this message\n");
 }
 
@@ -433,8 +440,9 @@ int main(int argc, char** argv) {
   options.IncreaseParallelism();
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
   //   def to 512 MB memtable
-  options.OptimizeLevelStyleCompaction();
-  //options.OptimizeUniversalStyleCompaction(1024L*1024*1024*4);
+  //options.OptimizeLevelStyleCompaction();
+  options.OptimizeUniversalStyleCompaction();
+  //1024L*1024*1024*4);
 
   rocksdb::Env *env = rocksdb::Env::Default();
   int threadsInLow = numThreads;
@@ -452,13 +460,14 @@ int main(int argc, char** argv) {
   // create the DB if it's not already present
   options.create_if_missing = true;
   options.max_open_files = 4096;
-  //options.allow_os_buffer = false;
-  //options.write_buffer_size = 1024L * 1024 * 256;
-  //options.max_write_buffer_number = 200;
-  options.min_write_buffer_number_to_merge = 1;
+
+  options.allow_os_buffer = true;
+  options.write_buffer_size = 1024L * 1024 * 128;
+  options.max_write_buffer_number = 16;
+  options.min_write_buffer_number_to_merge = 2;
   options.level0_file_num_compaction_trigger = 4;
 
-  options.compression = rocksdb::kNoCompression;
+  options.compression = rocksdb::kSnappyCompression;
   //options.max_background_compactions = threadsInLow * 2;
   options.max_background_flushes = 2;
   options.env = env;
