@@ -433,8 +433,9 @@ int main(int argc, char** argv) {
   // Prepare general DB options.
   rocksdb::Options options;
   TuneUniversalStyleCompaction(&options, dbCacheMB);
+  //TuneLevelStyleCompaction(&options, dbCacheMB);
 
-  /*
+#if 0
   // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
   options.IncreaseParallelism();
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
@@ -473,7 +474,7 @@ int main(int argc, char** argv) {
   //options.soft_rate_limit = 0.5;
   //options.hard_rate_limit = 1.1;
   //options.disable_auto_compactions = true;
-  */
+#endif
 
   rocksdb::WriteOptions writeOptions;
   writeOptions.disableWAL = true;

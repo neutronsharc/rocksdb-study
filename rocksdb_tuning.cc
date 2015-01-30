@@ -17,6 +17,7 @@
 
 
 void TuneUniversalStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
+  printf("Use universal-style compaction\n");
   // Set num of threads in Low/High thread pools.
   rocksdb::Env *env = rocksdb::Env::Default();
   env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
@@ -57,6 +58,7 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
 
   options->IncreaseParallelism();
 
+  printf("Use level-style compaction\n");
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
   //   def to 512 MB memtable
   options->OptimizeLevelStyleCompaction();
