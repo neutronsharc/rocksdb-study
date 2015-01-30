@@ -135,8 +135,8 @@ void PrintStats(int *latency, int size, const char *header) {
 void Worker(WorkerTask *task) {
 
   char key[128];
-  char charvalue[1024];
-  int objSize = 1023;
+  char charvalue[10002];
+  assert(objSize <= 10000);
 
   rocksdb::Status status;
   unsigned long tBeginUs, tEndUs, t1, t2;
@@ -152,14 +152,14 @@ void Worker(WorkerTask *task) {
     tBeginUs = time_microsec();
     for (int i = 0; i < task->numWrites; i++) {
       sprintf(key, "task-%d-key-%d", task->id, i);
-      arc4random_buf(charvalue, 1024);
+      arc4random_buf(charvalue, objSize);
       sprintf(charvalue, "task-%d-value-%d", task->id, i);
       charvalue[strlen(charvalue)] = ' ';
       // memcached protocol requires '\r\n' at end of value.
-      charvalue[1022] = '\r';
-      charvalue[1023] = '\n';
+      charvalue[objSize] = '\r';
+      charvalue[objSize + 1] = '\n';
       rocksdb::Slice keyslice(key, strlen(key));
-      rocksdb::Slice valueslice(charvalue, 1024);
+      rocksdb::Slice valueslice(charvalue, objSize + 2);
 
       t1 = time_microsec();
       status = task->db->Put(task->writeOptions, keyslice, valueslice);
@@ -186,7 +186,6 @@ void Worker(WorkerTask *task) {
          << elapsedMilliSec / 1000.0 << " seconds, "
          << "data = " << (objSize * task->numWrites / 1024.0 / 1024) << " MB, "
          << "IOPS = " << task->numWrites / (elapsedMilliSec / 1000.0) << endl;
-    cout << "avg write lat (ms) = " << (double)elapsedMilliSec / task->numWrites << endl;
     task->outputLock->unlock();
   }
 
@@ -221,7 +220,7 @@ void Worker(WorkerTask *task) {
                 rets[k].ToString().c_str());
             continue;
           }
-          assert(values[k].length() == 1023);
+          assert(values[k].length() == objSize + 2);
           int tidAtKey, vidAtKey, tidAtValue, vidAtValue;
           sscanf(keys[k], "task-%d-key-%d", &tidAtKey, &vidAtKey);
           sscanf(values[k].c_str(), "task-%d-value-%d", &tidAtValue, &vidAtValue);
@@ -239,7 +238,7 @@ void Worker(WorkerTask *task) {
         t2 = time_microsec();
         task->readLatency[i] = t2 - t1;
         assert(status.ok());
-        assert(value.length() == 1023);
+        assert(value.length() == objSize + 2);
         int rid, rval;
         sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
         assert(rid == task->id);
