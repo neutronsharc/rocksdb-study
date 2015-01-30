@@ -20,6 +20,7 @@
 #include "debug.h"
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
+#include "rocksdb_tuning.h"
 
 
 static void ProcessOneRequest(void* p) {
@@ -40,6 +41,9 @@ static void ProcessOneRequest(void* p) {
 bool RocksDBInterface::OpenDB(const char* dbPath,
                               int numIOThreads,
                               int blockCacheMB) {
+
+  TuneUniversalStyleCompaction(&options_, blockCacheMB);
+  /*
   // Set num of threads in Low/High thread pools.
   rocksdb::Env *env = rocksdb::Env::Default();
   env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
@@ -78,12 +82,13 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   //options_.max_background_compactions = 16;
   options_.max_background_flushes = 2;
   options_.env = env;
+  */
 
   writeOptions_.disableWAL = true;
 
-  readOptions_.verify_checksums = true;
   // save index/filter/data blocks in block cache.
-  readOptions_.fill_cache = false;
+  readOptions_.fill_cache = true;
+  readOptions_.verify_checksums = true;
 
   rocksdb::Status s = rocksdb::DB::Open(options_, dbPath, &db_);
   assert(s.ok());

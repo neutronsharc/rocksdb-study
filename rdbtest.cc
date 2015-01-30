@@ -21,6 +21,7 @@
 #include "threadpool.h"
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
+#include "rocksdb_tuning.h"
 
 using namespace std;
 
@@ -433,9 +434,11 @@ int main(int argc, char** argv) {
   //TryKVInterface(kDBPath, numTasks, cacheMB);
   //return 0;
 
-
   // Prepare general DB options.
   rocksdb::Options options;
+  TuneUniversalStyleCompaction(&options, dbCacheMB);
+
+  /*
   // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
   options.IncreaseParallelism();
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
@@ -464,8 +467,8 @@ int main(int argc, char** argv) {
   options.allow_os_buffer = true;
   options.write_buffer_size = 1024L * 1024 * 128;
   options.max_write_buffer_number = 16;
-  options.min_write_buffer_number_to_merge = 2;
-  options.level0_file_num_compaction_trigger = 4;
+  //options.min_write_buffer_number_to_merge = 2;
+  //options.level0_file_num_compaction_trigger = 4;
 
   options.compression = rocksdb::kSnappyCompression;
   //options.max_background_compactions = threadsInLow * 2;
@@ -474,15 +477,15 @@ int main(int argc, char** argv) {
   //options.soft_rate_limit = 0.5;
   //options.hard_rate_limit = 1.1;
   //options.disable_auto_compactions = true;
-
+  */
 
   rocksdb::WriteOptions writeOptions;
   writeOptions.disableWAL = true;
 
   rocksdb::ReadOptions readOptions;
-  readOptions.verify_checksums = true;
   // save index/filter/data blocks in block cache.
   readOptions.fill_cache = true;
+  readOptions.verify_checksums = true;
 
   std::thread  *workers = new std::thread[numTasks];
   mutex outputLock;
@@ -493,7 +496,7 @@ int main(int argc, char** argv) {
   rocksdb::DB* db;
   rocksdb::Status s;
 
-#if 0
+#if 1
   // Open normal DB
   {
   s = rocksdb::DB::Open(options, dbPath, &db);
