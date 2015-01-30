@@ -145,7 +145,7 @@ void Worker(WorkerTask *task) {
   sem_wait(&task->sem_begin);
   printf("worker %d started...\n", task->id);
 
-  long elapsedMicroSec, elapsedMilliSec;
+  long elapsedMicroSec;
 
   if (task->doWrite) {
     printf("worker %d will do %d writes...\n", task->id, task->numWrites);
@@ -180,12 +180,11 @@ void Worker(WorkerTask *task) {
     tEndUs = time_microsec();
     printf("task %d finished write ...\n", task->id);
     elapsedMicroSec = tEndUs - tBeginUs;
-    elapsedMilliSec = elapsedMicroSec / 1000;
     task->outputLock->lock();
     cout << "thread " << task->id << " has written " << task->numWrites << " objs" << " in "
-         << elapsedMilliSec / 1000.0 << " seconds, "
+         << elapsedMicroSec / 1000000.0 << " seconds, "
          << "data = " << (objSize * task->numWrites / 1024.0 / 1024) << " MB, "
-         << "IOPS = " << task->numWrites / (elapsedMilliSec / 1000.0) << endl;
+         << "IOPS = " << task->numWrites * 1000000.0 / elapsedMicroSec << endl;
     task->outputLock->unlock();
   }
 
@@ -257,13 +256,11 @@ void Worker(WorkerTask *task) {
     }
     tEndUs = time_microsec();
     elapsedMicroSec = tEndUs - tBeginUs;
-    elapsedMilliSec = elapsedMicroSec / 1000;
     task->outputLock->lock();
     cout << "thread " << task->id << " has read " << task->numReads << " objs" << " in "
-         << elapsedMilliSec / 1000.0 << " seconds, "
+         << elapsedMicroSec / 1000000.0 << " seconds, "
          << "data = " << (objSize * task->numReads/ 1024.0 / 1024) << " MB, "
-         << "IOPS = " << task->numReads / (elapsedMilliSec / 1000.0) << endl;
-    cout << "avg read lat (ms) = " << (double)elapsedMilliSec / task->numReads << endl;
+         << "IOPS = " << task->numReads * 1000000.0 / elapsedMicroSec << endl;
     task->outputLock->unlock();
   }
 
