@@ -43,6 +43,8 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
                               int blockCacheMB) {
 
   TuneUniversalStyleCompaction(&options_, blockCacheMB);
+  //options_.compaction_options_universal.max_size_amplification_percent = 20;
+  //options_.compression = rocksdb::kNoCompression;
   /*
   // Set num of threads in Low/High thread pools.
   rocksdb::Env *env = rocksdb::Env::Default();
@@ -145,6 +147,7 @@ bool RocksDBInterface::Get(KVRequest*  p)  {
     }
   } else {
     err("key %s not exist\n", p->key);
+    p->value = NULL;
     p->retcode = NOT_EXIST;
   }
   // Send completion signal.
@@ -214,6 +217,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
       }
     } else {
       err("failed to get key %s: ret: %s\n", p->key, rets[i].ToString().c_str());
+      p->value = NULL;
       p->retcode = NOT_EXIST;
     }
   }

@@ -436,21 +436,23 @@ int main(int argc, char** argv) {
   //TuneLevelStyleCompaction(&options, dbCacheMB);
 
 #if 0
+  rocksdb::Env *env = rocksdb::Env::Default();
+  int threadsInLow = numThreads;
+  int threadsInHigh = numThreads * 2;
+  // Low thread pool for compaction
+  //env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
+  // High thread pool for flushing memtable.
+  //env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
+
   // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
   options.IncreaseParallelism();
+
   // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
   //   def to 512 MB memtable
   //options.OptimizeLevelStyleCompaction();
   options.OptimizeUniversalStyleCompaction();
   //1024L*1024*1024*4);
 
-  rocksdb::Env *env = rocksdb::Env::Default();
-  int threadsInLow = numThreads;
-  int threadsInHigh = numThreads * 2;
-  // Low thread pool for compaction
-  env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
-  // High thread pool for flushing memtable.
-  env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
 
   // point lookup: will create hash index, 10-bits bloom filter,
   // a block-cache of this size in MB, 4KB block size,

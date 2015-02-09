@@ -54,6 +54,7 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
     bool allGet = true;
     for (int i = 0; i < numRequests; i++) {
       KVRequest *p = request + i;
+      p->reserved = NULL;
       if (p->type != GET) {
         allGet = false;
         break;
