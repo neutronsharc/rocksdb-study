@@ -69,7 +69,8 @@ bool doRead = false;
 int numThreads = 1;
 int objSize = 1000;
 long numObjs = 1000L;
-long dbCacheMB = 1024L;
+long numOps = 1000L;
+long dbCacheMB = 1000L;
 long totalTargetQPS = 1000000L;
 int numKeysPerRead = 4;
 
@@ -191,8 +192,7 @@ void Worker(WorkerTask *task) {
   sem_post(&task->sem_end);
 
   sem_wait(&task->sem_begin);
-  printf("worker %d started read...\n", task->id);
-  char keys[1000][1000];
+  char keys[100][200];
 
   if (task->doRead) {
     printf("worker %d will do %d reads ...\n", task->id, task->numReads);
@@ -237,7 +237,7 @@ void Worker(WorkerTask *task) {
         t2 = time_microsec();
         task->readLatency[i] = t2 - t1;
         assert(status.ok());
-        assert(value.length() == objSize + 2);
+        assert(value.length() == objSize || value.length() == objSize + 2);
         int rid, rval;
         sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
         assert(rid == task->id);
@@ -264,8 +264,8 @@ void Worker(WorkerTask *task) {
     task->outputLock->unlock();
   }
 
-  sem_post(&task->sem_end); printf("task %d finished read...\n", task->id);
-
+  sem_post(&task->sem_end);
+  printf("task %d finished...\n", task->id);
 }
 
 void TryKVInterface(string &dbpath, int numThreads, int cacheMB) {
@@ -352,6 +352,7 @@ void help() {
   printf("-r                   : perform read benchmark. Def to not\n");
   printf("-s <obj size>        : object size. Def = 1000\n");
   printf("-n <num of objs>     : total number of objs. Def = 1000\n");
+  printf("-o <num of reads>    : total number of read ops. Def = 1000\n");
   printf("-t <num of threads>  : number of threads to run. Def = 1\n");
   printf("-c <DB cache>        : DB cache in MB. Def = 1024\n");
   printf("-q <QPS>             : Total target QPS by all threads. \n"
@@ -369,7 +370,7 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:k:")) != EOF) {
+  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:k:o:")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -390,6 +391,10 @@ int main(int argc, char** argv) {
         objSize = atoi(optarg);
         printf("object size = %d\n", objSize);
         break;
+      case 'o':
+        numOps = atol(optarg);
+        printf("total number of reads to perform = %d\n", numOps);
+        break;
       case 'n':
         numObjs = atol(optarg);
         printf("total number of objects = %d\n", numObjs);
@@ -400,7 +405,7 @@ int main(int argc, char** argv) {
         break;
       case 'c':
         dbCacheMB = atoi(optarg);
-        printf("will use %d MB cache\n", dbCacheMB);
+        printf("will use %d MB DB block cache\n", dbCacheMB);
         break;
       case 'q':
         totalTargetQPS = atol(optarg);
@@ -531,13 +536,19 @@ int main(int argc, char** argv) {
 
   // seq write objs.
   //int numObjs = 1000 * 1000 * 60;
-  int writeObjCount = numObjs;
-  int readObjCount = numObjs;
+  long writeObjCount = numObjs;
+  long readObjCount = numOps;
 
-  int *writeLatency = new int[numObjs];
-  int *readLatency = new int[numObjs];
-  memset(writeLatency, 0, numObjs * sizeof(int));
-  memset(readLatency, 0, numObjs * sizeof(int));
+  int *writeLatency = NULL;
+  int *readLatency = NULL;
+  if (doWrite) {
+    writeLatency = new int[writeObjCount];
+    memset(writeLatency, 0, writeObjCount * sizeof(int));
+  }
+  if (doRead) {
+    readLatency = new int[readObjCount];
+    memset(readLatency, 0, readObjCount * sizeof(int));
+  }
 
   int perTaskWrite = writeObjCount / numTasks;
   int perTaskRead = readObjCount / numTasks;
@@ -565,7 +576,9 @@ int main(int argc, char** argv) {
     workers[i] = std::thread(Worker, tasks + i);
   }
 
-  printf("Main: will start write phase...\n");
+  if (doWrite) {
+    printf("Main: will start write phase...\n");
+  }
   unsigned long t1, t2, timeTotal;
   t1 = time_microsec();
   // start worker to write.
@@ -588,7 +601,9 @@ int main(int argc, char** argv) {
   }
 
   // start worker to read.
-  printf("Main: will start read phase...\n");
+  if (doRead) {
+    printf("Main: will start read phase...\n");
+  }
   t1 = time_microsec();
   for (int i = 0; i < numTasks; i++) {
     sem_post(&tasks[i].sem_begin);
