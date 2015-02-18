@@ -9,16 +9,19 @@ LDFLAGS = -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 all: rdbtest kvlib.a
 
-kvlib.a : kvinterface.o kvimpl_rocks.o rocksdb_tuning.o
+kvlib.a : kvinterface.o kvimpl_rocks.o rocksdb_tuning.o hash.o
 	ar crvs $@ $^
 #$(ROCKSDB)/librocksdb.a
 
-rdbtest : rdbtest.cc kvinterface.cc kvimpl_rocks.cc rocksdb_tuning.cc threadpool.h
+rdbtest : rdbtest.cc kvinterface.cc kvimpl_rocks.cc rocksdb_tuning.cc threadpool.h hash.o
 	g++ -std=c++11 -g $^ -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 #.cpp.o:
 %.o : %.cpp
-	$(CXX) -std=c++11 -g $(CXXFLAGS) -c $< -o $@
+	$(CXX) -std=c++11 $(CXXFLAGS) -c $< -o $@
+
+%.o : %.c
+	$(CC) -std=gnu99 $(CFLAGS) -c $< -o $@
 
 #.c.o:
 #	$(CC) -g $(CFLAGS) -c $< -o $@ -I../include

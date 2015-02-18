@@ -18,6 +18,7 @@
 #include "rocksdb/options.h"
 
 #include "debug.h"
+#include "hash.h"
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
 #include "rocksdb_tuning.h"
@@ -146,7 +147,7 @@ bool RocksDBInterface::Get(KVRequest*  p)  {
       p->retcode = SUCCESS;
     }
   } else {
-    err("key %s not exist\n", p->key);
+    dbg("key %s not exist\n", p->key);
     p->value = NULL;
     p->retcode = NOT_EXIST;
   }
@@ -180,7 +181,7 @@ bool RocksDBInterface::Delete(KVRequest*  p) {
   dbg("delete key %s: ret = %s\n", p->key, status.ToString().c_str());
   if (status.ok()) {
   } else {
-    err("delete key %s failed\n", p->key);
+    dbg("delete key %s failed\n", p->key);
   }
   p->retcode = SUCCESS;
   if (p->reserved) {
@@ -216,7 +217,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
         p->retcode = SUCCESS;
       }
     } else {
-      err("failed to get key %s: ret: %s\n", p->key, rets[i].ToString().c_str());
+      dbg("failed to get key %s: ret: %s\n", p->key, rets[i].ToString().c_str());
       p->value = NULL;
       p->retcode = NOT_EXIST;
     }
