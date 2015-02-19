@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <typeinfo>
 
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
@@ -23,7 +24,7 @@
 #include "kvimpl_rocks.h"
 #include "rocksdb_tuning.h"
 
-
+/*
 static void ProcessOneRequest(void* p) {
     KVRequest* request = (KVRequest*)p;
     //DumpKVRequest(request);
@@ -37,7 +38,7 @@ static void ProcessOneRequest(void* p) {
     default:
       printf("unknown rqst\n");
     }
-}
+} */
 
 bool RocksDBShard::OpenDB(const string& dbPath,
                           int blockCacheMB,
@@ -118,7 +119,7 @@ bool RocksDBShard::Delete(KVRequest*  p) {
   return true;
 }
 
-bool RocksDBShard::MultiGet(vector<KVRequest*> requests) {
+bool RocksDBShard::MultiGet(vector<KVRequest*> &requests) {
   vector<rocksdb::Slice> keySlices;
   vector<string> values;
   int numRequests = requests.size();
@@ -149,44 +150,21 @@ bool RocksDBShard::MultiGet(vector<KVRequest*> requests) {
       p->value = NULL;
       p->retcode = NOT_EXIST;
     }
+    if (p->reserved) {
+      MultiCompletion* comp = (MultiCompletion*)p->reserved;
+      comp->AddFinish();
+    }
   }
   return true;
 }
 
 // Multi-get.
 bool RocksDBShard::MultiGet(KVRequest* requests, int numRequests) {
-  vector<rocksdb::Slice> keySlices;
-  vector<string> values;
-
+  vector<KVRequest*> vecRqsts;
   for (int i = 0; i < numRequests; i++) {
-    KVRequest *p = requests + i;
-    assert(p->type == GET);
-    keySlices.push_back(rocksdb::Slice(p->key, p->keylen));
+    vecRqsts.push_back(requests + i);
   }
-
-  vector<rocksdb::Status> rets = db_->MultiGet(readOptions_, keySlices, &values);
-  for (int i = 0; i < numRequests; i++) {
-    KVRequest *p = requests + i;
-    if (rets[i].ok()) {
-      p->vlen = values[i].length();
-      p->value = (char*)malloc(p->vlen);
-      if (!p->value) {
-        err("key %s: fail to malloc %d bytes\n", p->key, p->vlen);
-        p->retcode = NO_MEM;
-      } else {
-        memcpy(p->value, values[i].data(), p->vlen);
-        dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, value.c_str());
-        p->retcode = SUCCESS;
-      }
-    } else {
-      dbg("failed to get key %s: ret: %s\n", p->key, rets[i].ToString().c_str());
-      p->vlen = 0;
-      p->value = NULL;
-      p->retcode = NOT_EXIST;
-    }
-  }
-  return true;
-
+  return MultiGet(vecRqsts);
 }
 
 
@@ -200,6 +178,14 @@ bool RocksDBInterface::Open(const char* dbPath,
 
   int perShardCacheMB = blockCacheMB / numShards;
 
+  // Open the thread pool.
+  numIOThreads_ = numIOThreads;
+  threadPool_.reset(new ThreadPool(numIOThreads, this));
+  //threadPool_->SetDataProcessor(ProcessOneRequest);
+  threadPool_->SetKVStore(this);
+  printf("Have created IO thread pool of %d threads\n", numIOThreads);
+
+  dbPath_ = dbPath;
   for (int i = 0; i < numShards; i++) {
     RocksDBShard* shard = new RocksDBShard();
     assert(shard != NULL);
@@ -218,49 +204,6 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
                               int blockCacheMB) {
 
   TuneUniversalStyleCompaction(&options_, blockCacheMB);
-  //options_.compaction_options_universal.max_size_amplification_percent = 20;
-  //options_.compression = rocksdb::kNoCompression;
-  /*
-  // Set num of threads in Low/High thread pools.
-  rocksdb::Env *env = rocksdb::Env::Default();
-  env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
-  env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
-
-  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
-  options_.IncreaseParallelism();
-  // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
-  //   def to 512 MB memtable
-  //options_.OptimizeLevelStyleCompaction();
-  options_.OptimizeUniversalStyleCompaction();
-
-  // point lookup: will create hash index, 10-bits bloom filter,
-  // a block-cache of this size in MB, 4KB block size,
-  // Usually let's use 1024 MB block cache.
-  unsigned long block_cache_mb = blockCacheMB;
-  options_.OptimizeForPointLookup(block_cache_mb);
-
-  // create the DB if it's not already present
-  options_.create_if_missing = true;
-  options_.max_open_files = 4096;
-  //options_.allow_os_buffer = false;
-  options_.write_buffer_size = 1024L * 1024 * 128;
-  options_.max_write_buffer_number = 64;
-
-  // Default write-buffer size = 128MB, generally we want
-  // wb-szie * min-wb-to-merge * l0-file-num equal-to L1 file size
-  // = (max_bytes_for_level_base)  = 512MB
-  options_.min_write_buffer_number_to_merge = 2;
-  options_.level0_file_num_compaction_trigger = 4;
-
-  //options_.compression = rocksdb::kNoCompression;
-  options_.compression = rocksdb::kSnappyCompression;
-
-  //options_.disable_auto_compactions = true;
-  //options_.max_background_compactions = 16;
-  options_.max_background_flushes = 2;
-  options_.env = env;
-  */
-
   writeOptions_.disableWAL = true;
 
   // save index/filter/data blocks in block cache.
@@ -284,12 +227,19 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
 }
 
 // Post a request to worker thread pool.
-void RocksDBInterface::PostRequest(KVRequest* p) {
+void RocksDBInterface::PostRequest(void* p) {
   threadPool_->AddWork(p);
 }
 
 // Process the given request in sync way.
-bool RocksDBInterface::ProcessRequest(KVRequest* request) {
+bool RocksDBInterface::ProcessRequest(void* p) {
+  if (typeid(p) == typeid(MultiGetWork*)) {
+    MultiGetWork* mget = (MultiGetWork*)p;
+    int shardID = mget->shardID;
+    return dbShards_[shardID]->MultiGet(mget->requests);
+  }
+
+  KVRequest* request = (KVRequest*)p;
   switch (request->type) {
   case GET:
     return Get(request);
@@ -383,22 +333,49 @@ bool RocksDBInterface::Delete(KVRequest*  p) {
 
 // Multi-get.
 bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
-  vector<KVRequest*> perShardRqsts[numberOfShards_];
+  MultiGetWork perShardRqsts[numberOfShards_];
 
+  int shardsUsed = 0;
+  int lastShardUsed = -1;
+
+  // Assign the get requests to DB shards.
   for (int i = 0; i < numRequests; i++) {
     KVRequest* p = requests + i;
+    p->reserved = NULL;
     uint32_t hv = bobhash(p->key, p->keylen, 0);
     int shardId = hv % numberOfShards_;
-    perShardRqsts[shardId].push_back(requests + i);
+    if (perShardRqsts[shardId].requests.size() == 0) {
+      shardsUsed++;
+      lastShardUsed = shardId;;
+    }
+    perShardRqsts[shardId].requests.push_back(requests + i);
+    perShardRqsts[shardId].shardID = shardId;
   }
 
-  for (int i = 0; i < numberOfShards_; i++) {
-    if (perShardRqsts[i].size() > 0) {
-      dbShards_[i]->MultiGet(perShardRqsts[i]);
-    }
-    // TODO: append a multi-completion to requests.
+  // If only one shard is used.
+  if (shardsUsed == 1) {
+    return dbShards_[lastShardUsed]->MultiGet(
+                perShardRqsts[lastShardUsed].requests);
   }
+
+  // Post mget() to each DB shard.
+  MultiCompletion comp(numRequests);
+  for (int i = 0; i < numRequests; i++) {
+    KVRequest *p = requests + i;
+    p->reserved = (void*)&comp;
+  }
+  for (int i = 0; i < numberOfShards_; i++) {
+    if (perShardRqsts[i].requests.size() == 0) {
+      continue;
+    }
+    printf("post mget %d rqsts to shard %d\n",
+        perShardRqsts[i].requests.size(), i);
+    PostRequest(&perShardRqsts[i]);
+  }
+  // wait for these requests to complete.
+  comp.WaitForCompletion();
   return true;
+
 
   vector<rocksdb::Slice> keySlices;
   vector<string> values;

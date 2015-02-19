@@ -67,7 +67,7 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
       for (int i = 0; i < numRequests; i++) {
         KVRequest *p = request + i;
         p->reserved = (void*)&comp;
-        rdb->PostRequest(p);
+        rdb->PostRequest((void*)p);
         dbg("posted rqst %d\n", i);
       }
       // TODO: wait for these requests to complete.

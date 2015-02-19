@@ -70,20 +70,20 @@ class WorkQueue {
   void* GetNext() {
     void *data = NULL;
 
-     pthread_mutex_lock(&mutex_);
+    pthread_mutex_lock(&mutex_);
 
-     while (!finished_ || tasks_.size() > 0) {
-       if (tasks_.size() > 0) {
-         data = tasks_.front();
-         tasks_.pop();
-         break;
-       } else {
-         pthread_cond_wait(&cond_, &mutex_);
-       }
-     }
+    while (!finished_ || tasks_.size() > 0) {
+      if (tasks_.size() > 0) {
+        data = tasks_.front();
+        tasks_.pop();
+        break;
+      } else {
+        pthread_cond_wait(&cond_, &mutex_);
+      }
+    }
 
-     pthread_mutex_unlock(&mutex_);
-     return data;
+    pthread_mutex_unlock(&mutex_);
+    return data;
   }
 
   // Mark the queue finished
@@ -106,16 +106,21 @@ class WorkQueue {
   pthread_cond_t cond_;
 };
 
+struct MultiGetWork {
+  int shardID;
+  vector<KVRequest*> requests;
+};
+
 static void GetWork(void *p, int id, KVStore* kvstore) {
   void *data;
   WorkQueue *wq = (WorkQueue*)p;
-  printf("thread %d started, kvstore = %p...\n", id, kvstore);
+  printf("KV store thread %d started, kvstore = %p...\n", id, kvstore);
   while (data = wq->GetNext()) {
     if (kvstore) {
-      kvstore->ProcessRequest((KVRequest*)data);
+      kvstore->ProcessRequest(data);
     }
   }
-  printf("thread %d stopped...\n", id);
+  printf("KV store thread %d stopped...\n", id);
 }
 
 
@@ -123,9 +128,9 @@ class ThreadPool {
  public:
   ThreadPool(int n, KVStore* kvstore) : numberThreads_(n), kvstore_(kvstore) {
     threads_ = new std::thread[n];
+    printf("Start KV store thread pool with %d threads\n", n);
     for (int i = 0; i < n; i++) {
       threads_[i] = std::thread(GetWork, &workQueue_, i, kvstore);
-      printf("created thread %d\n", i);
     }
   }
 

@@ -72,10 +72,10 @@ int numThreads = 1;
 int objSize = 1000;
 long numObjs = 1000L;
 long numOps = 1000L;
-long dbCacheMB = 1000L;
+long dbCacheMB = 5000L;
 long totalTargetQPS = 1000000L;
-int numKeysPerRead = 4;
-int numShards = 4;
+int numKeysPerRead = 1;
+int numShards = 8;
 
 vector<rocksdb::ColumnFamilyHandle*> familyHandles;
 
@@ -256,6 +256,7 @@ void Worker(WorkerTask *task) {
           assert(tidAtKey == task->id);
           assert(tidAtKey == tidAtValue);
           assert(vidAtKey == vidAtValue);
+          free(rqsts[k].value);
         }
       } else {
         unsigned long objID = get_random(task->numWrites);
@@ -358,14 +359,14 @@ void TryRocksDB(string &dbpath, int numThreads, int cacheMB) {
   write.vlen = 1023; //strlen(charvalue);
 
   //rdb.PostRequest(&write);
-  rdb.ProcessRequest(&write);
+  rdb.ProcessRequest((void*)&write);
 
 
   KVRequest read;
   read.type = GET;
   read.key = key;
   read.keylen = strlen(key);
-  rdb.ProcessRequest(&read);
+  rdb.ProcessRequest((void*)&read);
   printf("get value = %s\n", read.value);
   assert(read.vlen == write.vlen);
   assert(memcmp(charvalue, read.value, read.vlen) == 0);
@@ -387,17 +388,17 @@ void help() {
   printf("parameters: \n");
   printf("-p <dbpath>          : rocksdb path. Must provide.\n");
   printf("-w                   : re-write entire DB before test. Def to not\n");
-  printf("-r                   : perform read benchmark. Def to not\n");
-  printf("-s <obj size>        : object size. Def = 1000\n");
-  printf("-S <shards>          : number of shards. Def = 4\n");
+  printf("-r                   : perform read benchmark after writing. Def to not\n");
+  printf("-s <obj size>        : object size in bytes. Def = 1000\n");
+  printf("-S <shards>          : number of shards. Def = 8\n");
   printf("-n <num of objs>     : total number of objs. Def = 1000\n");
   printf("-o <num of reads>    : total number of read ops. Def = 1000\n");
   printf("-t <num of threads>  : number of threads to run. Def = 1\n");
-  printf("-c <DB cache>        : DB cache in MB. Def = 1024\n");
+  printf("-c <DB cache>        : DB cache in MB. Def = 5000\n");
   printf("-q <QPS>             : Total target QPS by all threads. \n"
          "                       Def = 1000000 op/sec\n");
   printf("-k <multiget keys>   : multi-get these number of keys in one get.\n"
-         "                       def = 4 keys\n");
+         "                       def = 1 key\n");
   printf("-h                   : this message\n");
 }
 
@@ -481,7 +482,7 @@ int main(int argc, char** argv) {
   std::thread  *workers = new std::thread[numTasks];
   mutex outputLock;
 
-  cout << "will run " << numTasks << " threads on DB " << dbPath << endl;
+  cout << "will run " << numTasks << " benchmark threads on DB " << dbPath << endl;
 
   RocksDBInterface iface;
   rocksdb::DB* db = NULL;

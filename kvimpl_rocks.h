@@ -43,7 +43,7 @@ class RocksDBShard {
 
   bool MultiGet(KVRequest* requests, int numRequests);
 
-  bool MultiGet(vector<KVRequest*> requests);
+  bool MultiGet(vector<KVRequest*> &requests);
 
   bool Put(KVRequest*  p);
 
@@ -77,9 +77,9 @@ class RocksDBInterface : public KVStore {
 
   bool Open(const char* dbPath, int numShards, int numIOThreads, int blockCacheMB);
 
-  void PostRequest(KVRequest* p);
+  void PostRequest(void* p);
 
-  virtual bool ProcessRequest(KVRequest* p);
+  virtual bool ProcessRequest(void* p);
 
   bool Get(KVRequest*  p);
 

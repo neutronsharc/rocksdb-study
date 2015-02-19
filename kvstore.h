@@ -10,7 +10,7 @@ class KVStore {
 
    ~KVStore() {}
 
-   virtual bool ProcessRequest(KVRequest* p) = 0;
+   virtual bool ProcessRequest(void* p) = 0;
 };
 
 #endif  // __KVSTORE_H__
