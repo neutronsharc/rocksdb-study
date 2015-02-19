@@ -145,14 +145,12 @@ void Worker(WorkerTask *task) {
   rocksdb::Status status;
   unsigned long tBeginUs, tEndUs, t1, t2;
 
-  printf("worker %d waiting...\n", task->id);
-  sem_wait(&task->sem_begin);
-  printf("worker %d started...\n", task->id);
-
   long elapsedMicroSec;
 
   if (task->doWrite) {
     printf("worker %d will do %d writes...\n", task->id, task->numWrites);
+    sem_wait(&task->sem_begin);
+
     tBeginUs = time_microsec();
     for (int i = 0; i < task->numWrites; i++) {
       sprintf(key, "task-%d-key-%d", task->id, i);
@@ -196,42 +194,65 @@ void Worker(WorkerTask *task) {
          << "data = " << (objSize * task->numWrites / 1024.0 / 1024) << " MB, "
          << "IOPS = " << task->numWrites * 1000000.0 / elapsedMicroSec << endl;
     task->outputLock->unlock();
+
+    sem_post(&task->sem_end);
   }
 
-  sem_post(&task->sem_end);
-
-  sem_wait(&task->sem_begin);
   char keys[100][200];
 
   if (task->doRead) {
+    sem_wait(&task->sem_begin);
+    int warmups = 10000;
+    // Warm up read.
+    printf("worker %d will do %d warm-up reads ...\n", task->id, warmups);
+    for (int i = 0; i < warmups; i++) {
+      unsigned long objID = get_random(task->numWrites);
+      sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
+      KVRequest rqst;
+      rqst.key = key;
+      rqst.keylen = strlen(key);
+      assert(task->dbIface->Get(&rqst) == true);
+      assert(rqst.retcode == SUCCESS);
+      free(rqst.value);
+    }
+    sem_post(&task->sem_end);
+  }
+
+  if (task->doRead) {
+    sem_wait(&task->sem_begin);
     printf("worker %d will do %d reads ...\n", task->id, task->numReads);
     tBeginUs = time_microsec();
     for (int i = 0; i < task->numReads; i++) {
       if (numKeysPerRead > 1) {
-        vector<rocksdb::Slice> keySlices;
-        vector<string> values;
+        KVRequest rqsts[numKeysPerRead];
+        //vector<rocksdb::Slice> keySlices;
+        //vector<string> values;
         t1 = time_microsec();
         for (int k = 0; k < numKeysPerRead; k++) {
           unsigned long objID = get_random(task->numWrites);
           sprintf(keys[k], "task-%d-key-%d", task->id, (int)(objID));
-          keySlices.push_back(
-            rocksdb::Slice(keys[k], strlen(keys[k])));
+          //keySlices.push_back(
+          //  rocksdb::Slice(keys[k], strlen(keys[k])));
+          rqsts[k].key = keys[k];
+          rqsts[k].keylen = strlen(keys[k]);
         }
-        vector<rocksdb::Status> rets = task->db->MultiGet(task->readOptions,
-                                                          keySlices,
-                                                          &values);
+        //vector<rocksdb::Status> rets = task->db->MultiGet(task->readOptions,
+        //                                                  keySlices,
+        //                                                  &values);
+        assert(task->dbIface->MultiGet(rqsts, numKeysPerRead));
         t2 = time_microsec();
         task->readLatency[i] = t2 - t1;
         for (int k = 0; k < numKeysPerRead; k++) {
-          if (!rets[k].ok()) {
-            printf("failed to get key %s: ret = %s\n", keys[k],
-                rets[k].ToString().c_str());
-            continue;
-          }
-          assert(values[k].length() == objSize + 2);
+          //if (!rets[k].ok()) {
+          //  printf("failed to get key %s: ret = %s\n", keys[k],
+          //      rets[k].ToString().c_str());
+          //  continue;
+          //}
+          //assert(values[k].length() == objSize + 2);
+          assert(rqsts[k].vlen == objSize + 2);
           int tidAtKey, vidAtKey, tidAtValue, vidAtValue;
-          sscanf(keys[k], "task-%d-key-%d", &tidAtKey, &vidAtKey);
-          sscanf(values[k].c_str(), "task-%d-value-%d", &tidAtValue, &vidAtValue);
+          sscanf(rqsts[k].key, "task-%d-key-%d", &tidAtKey, &vidAtKey);
+          sscanf(rqsts[k].value, "task-%d-value-%d", &tidAtValue, &vidAtValue);
           assert(tidAtKey == task->id);
           assert(tidAtKey == tidAtValue);
           assert(vidAtKey == vidAtValue);
@@ -279,9 +300,9 @@ void Worker(WorkerTask *task) {
          << "data = " << (objSize * task->numReads/ 1024.0 / 1024) << " MB, "
          << "IOPS = " << task->numReads * 1000000.0 / elapsedMicroSec << endl;
     task->outputLock->unlock();
+    sem_post(&task->sem_end);
   }
 
-  sem_post(&task->sem_end);
   printf("task %d finished...\n", task->id);
 }
 
@@ -544,23 +565,21 @@ int main(int argc, char** argv) {
     workers[i] = std::thread(Worker, tasks + i);
   }
 
+  unsigned long t1, t2, timeTotal;
   if (doWrite) {
     printf("Main: will start write phase...\n");
-  }
-  unsigned long t1, t2, timeTotal;
-  t1 = time_microsec();
-  // start worker to write.
-  for (int i = 0; i < numTasks; i++) {
-    sem_post(&tasks[i].sem_begin);
-  }
-  // wait for write to finish.
-  for (int i = 0; i < numTasks; i++) {
-    sem_wait(&tasks[i].sem_end);
-  }
-  timeTotal = time_microsec() - t1;
-  // output stats
+    t1 = time_microsec();
+    // start worker to write.
+    for (int i = 0; i < numTasks; i++) {
+      sem_post(&tasks[i].sem_begin);
+    }
+    // wait for write to finish.
+    for (int i = 0; i < numTasks; i++) {
+      sem_wait(&tasks[i].sem_end);
+    }
+    timeTotal = time_microsec() - t1;
 
-  if (doWrite) {
+    // output stats
     sort(writeLatency, writeLatency + writeObjCount);
     printf("Overall write IOPS = %f\n", writeObjCount / (timeTotal / 1000000.0));
     PrintStats(writeLatency, writeObjCount, "\nOverall write latency in ms");
@@ -570,17 +589,29 @@ int main(int argc, char** argv) {
 
   // start worker to read.
   if (doRead) {
-    printf("Main: will start read phase...\n");
+    // Warm up phase.
+    printf("\n\nMain: warm up read...\n");
+    for (int i = 0; i < numTasks; i++) {
+      sem_post(&tasks[i].sem_begin);
+    }
+    // wait for read to finish.
+    for (int i = 0; i < numTasks; i++) {
+      sem_wait(&tasks[i].sem_end);
+    }
+
+    printf("\n\nMain: will start read phase...\n");
+
+    t1 = time_microsec();
+    for (int i = 0; i < numTasks; i++) {
+      sem_post(&tasks[i].sem_begin);
+    }
+    // wait for read to finish.
+    for (int i = 0; i < numTasks; i++) {
+      sem_wait(&tasks[i].sem_end);
+    }
+    timeTotal = time_microsec() - t1;
   }
-  t1 = time_microsec();
-  for (int i = 0; i < numTasks; i++) {
-    sem_post(&tasks[i].sem_begin);
-  }
-  // wait for read to finish.
-  for (int i = 0; i < numTasks; i++) {
-    sem_wait(&tasks[i].sem_end);
-  }
-  timeTotal = time_microsec() - t1;
+
   for (int i = 0; i < numTasks; i++) {
     if (workers[i].joinable()) {
       workers[i].join();
