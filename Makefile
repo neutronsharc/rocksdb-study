@@ -1,5 +1,5 @@
-CC = gcc
-CXX = g++ -std=c++11
+CC = gcc -g
+CXX = g++ -g -std=c++11
 ROCKSDB = /home/shawn/code/rocksdb
 CFLAGS = -g -I${ROCKSDB}/include
 CXXFLAGS = -g -I${ROCKSDB}/include
@@ -13,7 +13,7 @@ kvlib.a : kvinterface.o kvimpl_rocks.o rocksdb_tuning.o hash.o
 	ar crvs $@ $^
 #$(ROCKSDB)/librocksdb.a
 
-rdbtest : rdbtest.cc kvinterface.cc kvimpl_rocks.cc rocksdb_tuning.cc threadpool.h hash.o
+rdbtest : rdbtest.o kvinterface.o kvimpl_rocks.o rocksdb_tuning.o threadpool.h hash.o
 	g++ -std=c++11 -g $^ -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 #.cpp.o:

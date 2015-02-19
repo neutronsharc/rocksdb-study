@@ -58,6 +58,8 @@ struct WorkerTask {
   rocksdb::WriteOptions writeOptions;
   rocksdb::ReadOptions readOptions;
 
+  RocksDBInterface* dbIface;
+
   // A lock to sync output.
   mutex *outputLock;
 };
@@ -73,6 +75,7 @@ long numOps = 1000L;
 long dbCacheMB = 1000L;
 long totalTargetQPS = 1000000L;
 int numKeysPerRead = 4;
+int numShards = 4;
 
 vector<rocksdb::ColumnFamilyHandle*> familyHandles;
 
@@ -159,11 +162,17 @@ void Worker(WorkerTask *task) {
       // memcached protocol requires '\r\n' at end of value.
       charvalue[objSize] = '\r';
       charvalue[objSize + 1] = '\n';
-      rocksdb::Slice keyslice(key, strlen(key));
-      rocksdb::Slice valueslice(charvalue, objSize + 2);
+      //rocksdb::Slice keyslice(key, strlen(key));
+      //rocksdb::Slice valueslice(charvalue, objSize + 2);
+      KVRequest rqst;
+      rqst.key = key;
+      rqst.keylen = strlen(key);
+      rqst.value = charvalue;
+      rqst.vlen = objSize + 2;
 
       t1 = time_microsec();
-      status = task->db->Put(task->writeOptions, keyslice, valueslice);
+      //status = task->db->Put(task->writeOptions, keyslice, valueslice);
+      assert(task->dbIface->Put(&rqst) == true);
       t2 = time_microsec();
       task->writeLatency[i] = t2 - t1;
       assert(status.ok());
@@ -230,18 +239,26 @@ void Worker(WorkerTask *task) {
       } else {
         unsigned long objID = get_random(task->numWrites);
         sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
+        KVRequest rqst;
+        rqst.key = key;
+        rqst.keylen = strlen(key);
 
-        string value;
+        //string value;
         t1 = time_microsec();
-        status = task->db->Get(task->readOptions, key, &value);
+        //status = task->db->Get(task->readOptions, key, &value);
+        assert(task->dbIface->Get(&rqst) == true);
         t2 = time_microsec();
         task->readLatency[i] = t2 - t1;
-        assert(status.ok());
-        assert(value.length() == objSize || value.length() == objSize + 2);
+        //assert(status.ok());
+        //assert(value.length() == objSize || value.length() == objSize + 2);
+        assert(rqst.retcode == SUCCESS);
+        assert(rqst.vlen == objSize || rqst.vlen == objSize + 2);
         int rid, rval;
-        sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
+        //sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
+        sscanf(rqst.value, "task-%d-value-%d", &rid, &rval);
         assert(rid == task->id);
         assert(rval == (int)objID);
+        free(rqst.value);
       }
       if ((i + 1) % 1000000 == 0) {
         printf("task %d: read %d \n", task->id, i + 1);
@@ -351,6 +368,7 @@ void help() {
   printf("-w                   : re-write entire DB before test. Def to not\n");
   printf("-r                   : perform read benchmark. Def to not\n");
   printf("-s <obj size>        : object size. Def = 1000\n");
+  printf("-S <shards>          : number of shards. Def = 4\n");
   printf("-n <num of objs>     : total number of objs. Def = 1000\n");
   printf("-o <num of reads>    : total number of read ops. Def = 1000\n");
   printf("-t <num of threads>  : number of threads to run. Def = 1\n");
@@ -370,7 +388,7 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:k:o:")) != EOF) {
+  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:k:o:S:")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -390,6 +408,10 @@ int main(int argc, char** argv) {
       case 's':
         objSize = atoi(optarg);
         printf("object size = %d\n", objSize);
+        break;
+      case 'S':
+        numShards = atoi(optarg);
+        printf("num of shards = %d\n", numShards);
         break;
       case 'o':
         numOps = atol(optarg);
@@ -435,53 +457,18 @@ int main(int argc, char** argv) {
   //TryKVInterface(kDBPath, numTasks, cacheMB);
   //return 0;
 
+  std::thread  *workers = new std::thread[numTasks];
+  mutex outputLock;
+
+  cout << "will run " << numTasks << " threads on DB " << dbPath << endl;
+
+  RocksDBInterface iface;
+  rocksdb::DB* db = NULL;
+  rocksdb::Status s;
   // Prepare general DB options.
   rocksdb::Options options;
   TuneUniversalStyleCompaction(&options, dbCacheMB);
   //TuneLevelStyleCompaction(&options, dbCacheMB);
-
-#if 0
-  rocksdb::Env *env = rocksdb::Env::Default();
-  int threadsInLow = numThreads;
-  int threadsInHigh = numThreads * 2;
-  // Low thread pool for compaction
-  //env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
-  // High thread pool for flushing memtable.
-  //env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
-
-  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
-  options.IncreaseParallelism();
-
-  // optimize level compaction: also set up per-level compression: 0,0,1,1,1,1,1
-  //   def to 512 MB memtable
-  //options.OptimizeLevelStyleCompaction();
-  options.OptimizeUniversalStyleCompaction();
-  //1024L*1024*1024*4);
-
-
-  // point lookup: will create hash index, 10-bits bloom filter,
-  // a block-cache of this size in MB, 4KB block size,
-  unsigned long block_cache_mb = dbCacheMB;
-  options.OptimizeForPointLookup(block_cache_mb);
-
-  // create the DB if it's not already present
-  options.create_if_missing = true;
-  options.max_open_files = 4096;
-
-  options.allow_os_buffer = true;
-  options.write_buffer_size = 1024L * 1024 * 128;
-  options.max_write_buffer_number = 16;
-  //options.min_write_buffer_number_to_merge = 2;
-  //options.level0_file_num_compaction_trigger = 4;
-
-  options.compression = rocksdb::kSnappyCompression;
-  //options.max_background_compactions = threadsInLow * 2;
-  options.max_background_flushes = 2;
-  options.env = env;
-  //options.soft_rate_limit = 0.5;
-  //options.hard_rate_limit = 1.1;
-  //options.disable_auto_compactions = true;
-#endif
 
   rocksdb::WriteOptions writeOptions;
   writeOptions.disableWAL = true;
@@ -491,36 +478,16 @@ int main(int argc, char** argv) {
   readOptions.fill_cache = true;
   readOptions.verify_checksums = true;
 
-  std::thread  *workers = new std::thread[numTasks];
-  mutex outputLock;
-
-  // open DB
-  //vector<ColumnFamilyDescriptor>& columnFamilies
-  cout << "will run " << numTasks << " threads on DB " << dbPath << endl;
-  rocksdb::DB* db;
-  rocksdb::Status s;
-
-#if 1
+#if 0
   // Open normal DB
-  {
   s = rocksdb::DB::Open(options, dbPath, &db);
   assert(s.ok());
-  }
 #else
-  // Open DB with column-families for multi-get
-  {
-    vector<string> familyNames;
-    //s = rocksdb::DB::ListColumnFamilies(options, dbPath, &familyNames);
-    //assert(s.ok());
-    vector<rocksdb::ColumnFamilyDescriptor> descriptors;
-    descriptors.push_back(rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName,
-                                                          options));
-    //vector<rocksdb::ColumnFamilyHandle*> familyHandles;
-    s = rocksdb::DB::Open(options, dbPath, descriptors, &familyHandles, &db);
-    assert(s.ok());
-
-  }
+  // Open DB interface with sharding.
+  int iothreads = 16;
+  assert(iface.Open(dbPath.c_str(), numShards, iothreads, dbCacheMB));
 #endif
+
   struct timespec tbegin, tend;
   struct timespec objBegin, objEnd;
   long elapsedMicroSec = 0;
@@ -568,6 +535,7 @@ int main(int argc, char** argv) {
     sem_init(&tasks[i].sem_end, 0, 0);
 
     tasks[i].db = db;
+    tasks[i].dbIface = &iface;
     tasks[i].writeOptions = writeOptions;
     tasks[i].readOptions = readOptions;
 

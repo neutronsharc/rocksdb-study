@@ -1,5 +1,5 @@
-#ifndef __KVINTERFACE__
-#define __KVINTERFACE__
+#ifndef __KVINTERFACE_H__
+#define __KVINTERFACE_H__
 
 #include "stdio.h"
 #include "stddef.h"
@@ -61,4 +61,4 @@ extern void DumpKVRequest(KVRequest* p);
 }
 #endif
 
-#endif  // __KVINTERFACE__
+#endif  // __KVINTERFACE_H__
