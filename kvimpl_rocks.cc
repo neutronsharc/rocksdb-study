@@ -173,7 +173,7 @@ bool RocksDBInterface::Open(const char* dbPath,
                             int numIOThreads,
                             int blockCacheMB) {
   rocksdb::Env *env = rocksdb::Env::Default();
-  env->SetBackgroundThreads(numShards * 8, rocksdb::Env::Priority::LOW);
+  env->SetBackgroundThreads(numShards * 4, rocksdb::Env::Priority::LOW);
   env->SetBackgroundThreads(numShards * 2, rocksdb::Env::Priority::HIGH);
 
   int perShardCacheMB = blockCacheMB / numShards;
@@ -181,10 +181,11 @@ bool RocksDBInterface::Open(const char* dbPath,
   // Open the thread pool.
   numIOThreads_ = numIOThreads;
   threadPool_.reset(new ThreadPool(numIOThreads, this));
-  //threadPool_->SetDataProcessor(ProcessOneRequest);
   threadPool_->SetKVStore(this);
-  printf("Have created IO thread pool of %d threads\n", numIOThreads);
+  printf("DB interface %s: created IO pool with %d threads\n",
+         dbPath, numIOThreads);
 
+  // Open DB shards.
   dbPath_ = dbPath;
   for (int i = 0; i < numShards; i++) {
     RocksDBShard* shard = new RocksDBShard();
@@ -233,13 +234,15 @@ void RocksDBInterface::PostRequest(void* p) {
 
 // Process the given request in sync way.
 bool RocksDBInterface::ProcessRequest(void* p) {
-  if (typeid(p) == typeid(MultiGetWork*)) {
-    MultiGetWork* mget = (MultiGetWork*)p;
+  QueuedTask* task = (QueuedTask*)p;
+
+  if (task->type == MULTI_GET) {
+    PerShardMultiGet* mget = task->task.mget;
     int shardID = mget->shardID;
     return dbShards_[shardID]->MultiGet(mget->requests);
   }
 
-  KVRequest* request = (KVRequest*)p;
+  KVRequest* request = (KVRequest*)(task->task.request);
   switch (request->type) {
   case GET:
     return Get(request);
@@ -331,9 +334,10 @@ bool RocksDBInterface::Delete(KVRequest*  p) {
   return true;
 }
 
-// Multi-get.
+// Multi-get. The individual get rqsts will be distributed to all shards
+// within this DB interface.
 bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
-  MultiGetWork perShardRqsts[numberOfShards_];
+  PerShardMultiGet perShardRqsts[numberOfShards_];
 
   int shardsUsed = 0;
   int lastShardUsed = -1;
@@ -358,19 +362,26 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
                 perShardRqsts[lastShardUsed].requests);
   }
 
-  // Post mget() to each DB shard.
+  // We have split the big multi-get into multiple per-shard mget.
   MultiCompletion comp(numRequests);
   for (int i = 0; i < numRequests; i++) {
     KVRequest *p = requests + i;
     p->reserved = (void*)&comp;
   }
+  QueuedTask tasks[shardsUsed];
+  int postedShards = 0;
   for (int i = 0; i < numberOfShards_; i++) {
     if (perShardRqsts[i].requests.size() == 0) {
       continue;
     }
-    printf("post mget %d rqsts to shard %d\n",
+    dbg("post mget %d rqsts to shard %d\n",
         perShardRqsts[i].requests.size(), i);
-    PostRequest(&perShardRqsts[i]);
+
+    tasks[postedShards].type = MULTI_GET;
+    tasks[postedShards].task.mget = &perShardRqsts[i];
+
+    PostRequest((void*)(tasks + postedShards));
+    postedShards++;
   }
   // wait for these requests to complete.
   comp.WaitForCompletion();

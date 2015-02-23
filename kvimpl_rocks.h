@@ -27,6 +27,27 @@
 
 using namespace std;
 
+// types of the tasks queued to the common io thread pool.
+enum {
+  SINGLE_REQUEST = 0,
+  MULTI_GET = 1,
+};
+
+struct PerShardMultiGet {
+  int shardID;
+  vector<KVRequest*> requests;
+};
+
+struct QueuedTask {
+  // Type of the task: a single rqst, or a multi-get for a specific shard.
+  int type;
+
+  union {
+    PerShardMultiGet* mget;  // a multi-get targeted at one specific shard.
+    KVRequest* request;     // single request
+  } task;
+};
+
 class RocksDBShard {
  public:
   RocksDBShard() {}

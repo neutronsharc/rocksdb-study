@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <typeinfo>
 
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
@@ -42,6 +43,9 @@ struct WorkerTask {
 
   // Target qps issued by this worker.
   unsigned long targetQPS;
+
+  // Target qps for write ops by this worker.
+  unsigned long writeTargetQPS;
 
   // ratio of write ops, 0.0 ~ 1.0. Main thread will set this value.
   double writeRatio;
@@ -74,6 +78,7 @@ long numObjs = 1000L;
 long numOps = 1000L;
 long dbCacheMB = 5000L;
 long totalTargetQPS = 1000000L;
+long totalWriteTargetQPS = 1000000L;
 int numKeysPerRead = 1;
 int numShards = 8;
 
@@ -174,13 +179,13 @@ void Worker(WorkerTask *task) {
       t2 = time_microsec();
       task->writeLatency[i] = t2 - t1;
       assert(status.ok());
-      if ((i + 1) % 1000000 == 0) {
+      if ((i + 1) % 500000 == 0) {
         printf("task %d: write %d \n", task->id, i + 1);
       }
       // Throttle to target QPS.
       unsigned long actualSpentTime = time_microsec() - tBeginUs;
       unsigned long targetSpentTime =
-        (unsigned long)((i + 1.0) * 1000000 / task->targetQPS);
+        (unsigned long)((i + 1.0) * 1000000 / task->writeTargetQPS);
       if (actualSpentTime < targetSpentTime) {
         usleep(targetSpentTime - actualSpentTime);
       }
@@ -209,11 +214,16 @@ void Worker(WorkerTask *task) {
       unsigned long objID = get_random(task->numWrites);
       sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
       KVRequest rqst;
+      rqst.reserved = NULL;
       rqst.key = key;
       rqst.keylen = strlen(key);
+      rqst.value = NULL;
       assert(task->dbIface->Get(&rqst) == true);
-      assert(rqst.retcode == SUCCESS);
-      free(rqst.value);
+      if (rqst.retcode != SUCCESS) {
+        printf("cannot find key %s\n", rqst.key);
+      } else {
+        free(rqst.value);
+      }
     }
     sem_post(&task->sem_end);
   }
@@ -233,8 +243,10 @@ void Worker(WorkerTask *task) {
           sprintf(keys[k], "task-%d-key-%d", task->id, (int)(objID));
           //keySlices.push_back(
           //  rocksdb::Slice(keys[k], strlen(keys[k])));
+          rqsts[k].type = GET;
           rqsts[k].key = keys[k];
           rqsts[k].keylen = strlen(keys[k]);
+          rqsts[k].reserved = NULL;
         }
         //vector<rocksdb::Status> rets = task->db->MultiGet(task->readOptions,
         //                                                  keySlices,
@@ -249,6 +261,10 @@ void Worker(WorkerTask *task) {
           //  continue;
           //}
           //assert(values[k].length() == objSize + 2);
+          if (rqsts[k].retcode != SUCCESS) {
+            printf("failed to get key %s\n", rqsts[k].key);
+            continue;
+          }
           assert(rqsts[k].vlen == objSize + 2);
           int tidAtKey, vidAtKey, tidAtValue, vidAtValue;
           sscanf(rqsts[k].key, "task-%d-key-%d", &tidAtKey, &vidAtKey);
@@ -264,6 +280,8 @@ void Worker(WorkerTask *task) {
         KVRequest rqst;
         rqst.key = key;
         rqst.keylen = strlen(key);
+        rqst.type = GET;
+        rqst.reserved = NULL;
 
         //string value;
         t1 = time_microsec();
@@ -273,16 +291,19 @@ void Worker(WorkerTask *task) {
         task->readLatency[i] = t2 - t1;
         //assert(status.ok());
         //assert(value.length() == objSize || value.length() == objSize + 2);
-        assert(rqst.retcode == SUCCESS);
-        assert(rqst.vlen == objSize || rqst.vlen == objSize + 2);
-        int rid, rval;
-        //sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
-        sscanf(rqst.value, "task-%d-value-%d", &rid, &rval);
-        assert(rid == task->id);
-        assert(rval == (int)objID);
-        free(rqst.value);
+        if (rqst.retcode != SUCCESS) {
+          printf("failed to get key %s\n", rqst.key);
+        } else {
+          assert(rqst.vlen == objSize || rqst.vlen == objSize + 2);
+          int rid, rval;
+          //sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
+          sscanf(rqst.value, "task-%d-value-%d", &rid, &rval);
+          assert(rid == task->id);
+          assert(rval == (int)objID);
+          free(rqst.value);
+        }
       }
-      if ((i + 1) % 1000000 == 0) {
+      if ((i + 1) % 500000 == 0) {
         printf("task %d: read %d \n", task->id, i + 1);
       }
       // Throttle to target QPS.
@@ -395,12 +416,15 @@ void help() {
   printf("-o <num of reads>    : total number of read ops. Def = 1000\n");
   printf("-t <num of threads>  : number of threads to run. Def = 1\n");
   printf("-c <DB cache>        : DB cache in MB. Def = 5000\n");
-  printf("-q <QPS>             : Total target QPS by all threads. \n"
+  printf("-q <QPS>             : Total read target QPS by all threads. \n"
+         "                       Def = 1000000 op/sec\n");
+  printf("-e <write QPS>       : Total write target QPS by all threads. \n"
          "                       Def = 1000000 op/sec\n");
   printf("-k <multiget keys>   : multi-get these number of keys in one get.\n"
          "                       def = 1 key\n");
   printf("-h                   : this message\n");
 }
+
 
 
 int main(int argc, char** argv) {
@@ -410,7 +434,7 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  while ((c = getopt(argc, argv, "p:wrhs:n:t:c:q:k:o:S:")) != EOF) {
+  while ((c = getopt(argc, argv, "e:p:wrhs:n:t:c:q:k:o:S:")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -453,7 +477,11 @@ int main(int argc, char** argv) {
         break;
       case 'q':
         totalTargetQPS = atol(optarg);
-        printf("total target QPS = %d\n", totalTargetQPS);
+        printf("total read target QPS = %d\n", totalTargetQPS);
+        break;
+      case 'e':
+        totalWriteTargetQPS = atol(optarg);
+        printf("total write target QPS = %d\n", totalWriteTargetQPS);
         break;
       case 'k':
         numKeysPerRead = atoi(optarg);
@@ -506,7 +534,7 @@ int main(int argc, char** argv) {
   assert(s.ok());
 #else
   // Open DB interface with sharding.
-  int iothreads = 16;
+  int iothreads = numShards * 2;
   assert(iface.Open(dbPath.c_str(), numShards, iothreads, dbCacheMB));
 #endif
 
@@ -550,8 +578,9 @@ int main(int argc, char** argv) {
     tasks[i].numWrites = perTaskWrite;
     tasks[i].numReads = perTaskRead;
     tasks[i].writeLatency = writeLatency + perTaskWrite * i;
-    tasks[i].readLatency = readLatency + perTaskRead* i;
+    tasks[i].readLatency = readLatency + perTaskRead * i;
     tasks[i].targetQPS = totalTargetQPS / numTasks;
+    tasks[i].writeTargetQPS = totalWriteTargetQPS / numTasks;
 
     sem_init(&tasks[i].sem_begin, 0, 0);
     sem_init(&tasks[i].sem_end, 0, 0);

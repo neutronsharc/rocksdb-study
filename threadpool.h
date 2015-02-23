@@ -106,11 +106,6 @@ class WorkQueue {
   pthread_cond_t cond_;
 };
 
-struct MultiGetWork {
-  int shardID;
-  vector<KVRequest*> requests;
-};
-
 static void GetWork(void *p, int id, KVStore* kvstore) {
   void *data;
   WorkQueue *wq = (WorkQueue*)p;

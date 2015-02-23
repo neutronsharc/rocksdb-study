@@ -45,7 +45,7 @@ struct KVRequest {
 };
 
 // Open the DB
-extern void* OpenDB(const char* dbPath, int numIOThreads, int cacheMB);
+extern void* OpenDB(const char* dbPath, int numShards, int cacheMB);
 
 // Open the DB
 extern void CloseDB(void* dbHandler);

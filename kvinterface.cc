@@ -27,9 +27,10 @@ void DumpKVRequest(KVRequest* p) {
   }
 }
 
-void* OpenDB(const char* dbPath, int numIOThreads, int cacheMB) {
+void* OpenDB(const char* dbPath, int numShards, int cacheMB) {
+  int numIOThreads = numShards * 2;
   RocksDBInterface *rdb = new RocksDBInterface();
-  rdb->OpenDB(dbPath, numIOThreads, cacheMB);
+  rdb->Open(dbPath, numShards, numIOThreads, cacheMB);
   return (void*)rdb;
 }
 
@@ -64,10 +65,15 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
       rdb->MultiGet(request, numRequests);
     } else {
       MultiCompletion comp(numRequests);
+      QueuedTask tasks[numRequests];
       for (int i = 0; i < numRequests; i++) {
         KVRequest *p = request + i;
         p->reserved = (void*)&comp;
-        rdb->PostRequest((void*)p);
+
+        tasks[i].type = SINGLE_REQUEST;
+        tasks[i].task.request = p;
+
+        rdb->PostRequest((void*)(tasks + i));
         dbg("posted rqst %d\n", i);
       }
       // TODO: wait for these requests to complete.
