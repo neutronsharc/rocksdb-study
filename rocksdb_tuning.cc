@@ -20,15 +20,19 @@ void TuneUniversalStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   printf("Use universal-style compaction\n");
 
   //options->IncreaseParallelism();
-
   options->OptimizeUniversalStyleCompaction();
 
   // Want point query.
+  if (blkCacheMB < 128) {
+    blkCacheMB = 128;
+  }
   options->OptimizeForPointLookup(blkCacheMB);
+
 
   // create the DB if it's not already present
   options->create_if_missing = true;
-  options->max_open_files = 4096;
+
+  options->max_open_files = 2000;
   options->allow_os_buffer = true;
   options->write_buffer_size = 1024L * 1024 * 32;
   options->max_write_buffer_number = 8;
@@ -36,22 +40,14 @@ void TuneUniversalStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   options->min_write_buffer_number_to_merge = 2;
   options->level0_file_num_compaction_trigger = 4;
 
-  //options->compression = rocksdb::kSnappyCompression;
-  options->compaction_options_universal.max_size_amplification_percent = 50;
+  options->compaction_options_universal.max_size_amplification_percent = 100;
   options->compression = rocksdb::kNoCompression;
+  //options->compression = rocksdb::kSnappyCompression;
 
   //options.disable_auto_compactions = true;
-
-  //rocksdb::Env *env = rocksdb::Env::Default();
-  //env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
-  //env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
   options->max_background_compactions = 8;
   options->max_background_flushes = 2;
 
-  //options.disable_auto_compactions = true;
-
-  // Set num of threads in Low/High thread pools.
-  //options->env = env;
 }
 
 void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
@@ -64,11 +60,14 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   options->OptimizeLevelStyleCompaction();
 
   // Want point query.
+  if (blkCacheMB < 128) {
+    blkCacheMB = 128;
+  }
   options->OptimizeForPointLookup(blkCacheMB);
 
   // create the DB if it's not already present
   options->create_if_missing = true;
-  options->max_open_files = 4096;
+  options->max_open_files = 2000;
   options->allow_os_buffer = true;
   options->write_buffer_size = 1024L * 1024 * 32;
   options->max_write_buffer_number = 8;
@@ -76,14 +75,9 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   options->min_write_buffer_number_to_merge = 2;
   options->level0_file_num_compaction_trigger = 4;
 
-  options->num_levels = 2;
+  options->num_levels = 5;
   options->compression = rocksdb::kNoCompression;
 
-  // Set num of threads in Low/High thread pools.
-  //rocksdb::Env *env = rocksdb::Env::Default();
-  //env->SetBackgroundThreads(16, rocksdb::Env::Priority::LOW);
-  //env->SetBackgroundThreads(2, rocksdb::Env::Priority::HIGH);
   options->max_background_compactions = 8;
   options->max_background_flushes = 2;
-  //options->env = env;
 }

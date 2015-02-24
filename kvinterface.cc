@@ -28,7 +28,8 @@ void DumpKVRequest(KVRequest* p) {
 }
 
 void* OpenDB(const char* dbPath, int numShards, int cacheMB) {
-  int numIOThreads = numShards * 2;
+  // Use Universal-compaction by default.
+  int numIOThreads = numShards;
   RocksDBInterface *rdb = new RocksDBInterface();
   rdb->Open(dbPath, numShards, numIOThreads, cacheMB);
   return (void*)rdb;

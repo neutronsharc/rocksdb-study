@@ -33,6 +33,12 @@ enum {
   MULTI_GET = 1,
 };
 
+// Compaction style.
+enum CompactionStyle {
+  LEVEL_COMPACTION = 0,
+  UNIVERSAL_COMPACTION = 1,
+};
+
 struct PerShardMultiGet {
   int shardID;
   vector<KVRequest*> requests;
@@ -58,7 +64,10 @@ class RocksDBShard {
     }
   }
 
-  bool OpenDB(const string& dbPath, int blockCacheMB, rocksdb::Env* env);
+  bool OpenDB(const string& dbPath,
+              int blockCacheMB,
+              CompactionStyle cstyle,
+              rocksdb::Env* env);
 
   bool Get(KVRequest*  p);
 
@@ -96,7 +105,16 @@ class RocksDBInterface : public KVStore {
 
   bool OpenDB(const char* dbPath, int numIOThreads, int blockCacheMB);
 
-  bool Open(const char* dbPath, int numShards, int numIOThreads, int blockCacheMB);
+  bool Open(const char* dbPath,
+            int numShards,
+            int numIOThreads,
+            int blockCacheMB,
+            CompactionStyle cstyle);
+
+  bool Open(const char* dbPath,
+            int numShards,
+            int numIOThreads,
+            int blockCacheMB);
 
   void PostRequest(void* p);
 

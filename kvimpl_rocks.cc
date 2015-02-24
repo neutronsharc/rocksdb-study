@@ -42,9 +42,14 @@ static void ProcessOneRequest(void* p) {
 
 bool RocksDBShard::OpenDB(const string& dbPath,
                           int blockCacheMB,
+                          CompactionStyle cstyle,
                           rocksdb::Env* env) {
   options_.env = env;
-  TuneUniversalStyleCompaction(&options_, blockCacheMB);
+  if (cstyle == LEVEL_COMPACTION) {
+    TuneLevelStyleCompaction(&options_, blockCacheMB);
+  } else {
+    TuneUniversalStyleCompaction(&options_, blockCacheMB);
+  }
 
   writeOptions_.disableWAL = true;
 
@@ -167,14 +172,35 @@ bool RocksDBShard::MultiGet(KVRequest* requests, int numRequests) {
   return MultiGet(vecRqsts);
 }
 
-
 bool RocksDBInterface::Open(const char* dbPath,
                             int numShards,
                             int numIOThreads,
                             int blockCacheMB) {
+  // Default to universal-style compaction.
+  return Open(dbPath, numShards, numIOThreads, blockCacheMB,
+      UNIVERSAL_COMPACTION);
+}
+
+
+// Open a multi-shard DB. Also prepare an io-thread pool associated with
+// this DB to run rqsts against individual shards.
+bool RocksDBInterface::Open(const char* dbPath,
+                            int numShards,
+                            int numIOThreads,
+                            int blockCacheMB,
+                            CompactionStyle cstyle) {
   rocksdb::Env *env = rocksdb::Env::Default();
-  env->SetBackgroundThreads(numShards * 4, rocksdb::Env::Priority::LOW);
-  env->SetBackgroundThreads(numShards * 2, rocksdb::Env::Priority::HIGH);
+  if (cstyle == UNIVERSAL_COMPACTION) {
+    // Universal-compaction uses large number of shards, should restrict number of
+    // compaction threads to contain space amplification.
+    env->SetBackgroundThreads((int)(numShards * 0.7), rocksdb::Env::Priority::LOW);
+    env->SetBackgroundThreads(numShards + 8, rocksdb::Env::Priority::HIGH);
+    printf("Choose universal compaction with %d shards\n", numShards);
+  } else {
+    env->SetBackgroundThreads(numShards * 4, rocksdb::Env::Priority::LOW);
+    env->SetBackgroundThreads(numShards + 8, rocksdb::Env::Priority::HIGH);
+    printf("Choose level compaction with %d shards\n", numShards);
+  }
 
   int perShardCacheMB = blockCacheMB / numShards;
 
@@ -192,7 +218,7 @@ bool RocksDBInterface::Open(const char* dbPath,
     assert(shard != NULL);
 
     string shardPath = string(dbPath) + string("/shard-") + std::to_string(i);
-    assert(shard->OpenDB(shardPath, perShardCacheMB, env));
+    assert(shard->OpenDB(shardPath, perShardCacheMB, cstyle, env));
 
     dbShards_.push_back(shard);
   }
@@ -200,6 +226,8 @@ bool RocksDBInterface::Open(const char* dbPath,
   return true;
 }
 
+
+// Open RocksDB in only 1 shard.
 bool RocksDBInterface::OpenDB(const char* dbPath,
                               int numIOThreads,
                               int blockCacheMB) {
