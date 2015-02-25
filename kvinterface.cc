@@ -6,17 +6,13 @@
 #include "kvimpl_rocks.h"
 
 #include "debug.h"
+#include "utils.h"
 
 const char* KVCmdName[] = {
   "GET",
   "PUT",
   "DELETE"
 };
-/*unsigned long time_microsec() {
-  struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
-  return t.tv_sec * 1000000 + t.tv_nsec / 1000;
-}*/
 
 void DumpKVRequest(KVRequest* p) {
   if (p->type <= DELETE) {
@@ -27,24 +23,23 @@ void DumpKVRequest(KVRequest* p) {
   }
 }
 
-// Create/open DB atthe given paths. The DB consists of
-// multiple shards, and spans multiple locations.
-void* OpenDBMPath(const char* dbPaths[],
-                  int numPaths,
-                  int numShards,
-                  int cacheMB) {
-  // Use Universal-compaction by default.
-  int numIOThreads = numShards;
-  RocksDBInterface *rdb = new RocksDBInterface();
-  rdb->Open(dbPaths, numPaths, numShards, numIOThreads, cacheMB);
-  return (void*)rdb;
-}
-
 void* OpenDB(const char* dbPath, int numShards, int cacheMB) {
-  // Use Universal-compaction by default.
+  // The dbPath is a "," separated list of dirs where DB is stored,
+  char *origPath = new char[strlen(dbPath) + 1];
+  strcpy(origPath, dbPath);
+  vector<char*> paths = SplitString(origPath, ",");
+
+  printf("Will open DB in %d shards at %d locations\n", numShards, paths.size());
+  for (int i = 0; i < paths.size(); i++) {
+    printf("\t%s\n", paths[i]);
+  }
+
   int numIOThreads = numShards;
   RocksDBInterface *rdb = new RocksDBInterface();
-  rdb->Open(dbPath, numShards, numIOThreads, cacheMB);
+
+  // Use Universal-compaction by default.
+  rdb->Open((const char**)&paths[0], paths.size(), numShards, numIOThreads, cacheMB);
+  delete origPath;
   return (void*)rdb;
 }
 
@@ -63,7 +58,10 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
   RocksDBInterface *rdb = (RocksDBInterface*)dbHandler;
   if (numRequests == 1) {
     request->reserved = NULL;
-    rdb->ProcessRequest(request);
+    QueuedTask task;
+    task.type = SINGLE_REQUEST;
+    task.task.request = request;
+    rdb->ProcessRequest(&task);
   } else {
     // Check if this is a multi-get.
     bool allGet = true;
@@ -87,7 +85,7 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
         tasks[i].type = SINGLE_REQUEST;
         tasks[i].task.request = p;
 
-        rdb->PostRequest((void*)(tasks + i));
+        rdb->PostRequest(tasks + i);
         dbg("posted rqst %d\n", i);
       }
       // TODO: wait for these requests to complete.

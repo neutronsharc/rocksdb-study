@@ -24,6 +24,7 @@
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
 #include "rocksdb_tuning.h"
+#include "utils.h"
 
 using namespace std;
 
@@ -318,9 +319,12 @@ void Worker(WorkerTask *task) {
     tEndUs = time_microsec();
     elapsedMicroSec = tEndUs - tBeginUs;
     task->outputLock->lock();
-    cout << "thread " << task->id << " has read " << task->numReads << " objs" << " in "
+    cout << "thread " << task->id << " has read "
+         << task->numReads * numKeysPerRead << " objs in "
          << elapsedMicroSec / 1000000.0 << " seconds, "
-         << "data = " << (objSize * task->numReads/ 1024.0 / 1024) << " MB, "
+         << "data = "
+         << (objSize * task->numReads * numKeysPerRead / 1024.0 / 1024)
+         << " MB, "
          << "IOPS = " << task->numReads * 1000000.0 / elapsedMicroSec << endl;
     task->outputLock->unlock();
     sem_post(&task->sem_end);
@@ -424,18 +428,6 @@ void help() {
   printf("-k <multiget keys>   : multi-get these number of keys in one get.\n"
          "                       def = 1 key\n");
   printf("-h                   : this message\n");
-}
-
-vector<char*> SplitString(char *input, const char *delimiters) {
-  vector<char*> ss;
-  char *pch;
-
-  pch = strtok(input, delimiters);
-  while (pch) {
-    ss.push_back(pch);
-    pch = strtok(NULL, delimiters);
-  }
-  return ss;
 }
 
 int main(int argc, char** argv) {

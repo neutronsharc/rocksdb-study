@@ -146,7 +146,7 @@ bool RocksDBShard::MultiGet(vector<KVRequest*> &requests) {
         p->retcode = NO_MEM;
       } else {
         memcpy(p->value, values[i].data(), p->vlen);
-        dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, value.c_str());
+        dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, values[i].c_str());
         p->retcode = SUCCESS;
       }
     } else {
@@ -285,8 +285,8 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
 }
 
 // Post a request to worker thread pool.
-void RocksDBInterface::PostRequest(void* p) {
-  threadPool_->AddWork(p);
+void RocksDBInterface::PostRequest(QueuedTask* p) {
+  threadPool_->AddWork((void*)p);
 }
 
 // Process the given request in sync way.
@@ -437,7 +437,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
     tasks[postedShards].type = MULTI_GET;
     tasks[postedShards].task.mget = &perShardRqsts[i];
 
-    PostRequest((void*)(tasks + postedShards));
+    PostRequest(tasks + postedShards);
     postedShards++;
   }
   // wait for these requests to complete.
@@ -465,7 +465,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
         p->retcode = NO_MEM;
       } else {
         memcpy(p->value, values[i].data(), p->vlen);
-        dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, value.c_str());
+        dbg("key %s: vlen = %d, value %s\n", p->key, p->vlen, values[i].c_str());
         p->retcode = SUCCESS;
       }
     } else {

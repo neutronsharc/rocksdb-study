@@ -133,7 +133,7 @@ class RocksDBInterface : public KVStore {
             int blockCacheMB,
             CompactionStyle cstyle);
 
-  void PostRequest(void* p);
+  void PostRequest(QueuedTask* p);
 
   virtual bool ProcessRequest(void* p);
 
