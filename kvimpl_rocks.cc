@@ -172,6 +172,26 @@ bool RocksDBShard::MultiGet(KVRequest* requests, int numRequests) {
   return MultiGet(vecRqsts);
 }
 
+uint64_t RocksDBShard::GetNumberOfRecords() {
+  uint64_t num;
+  bool ret = db_->GetIntProperty("rocksdb.estimate-num-keys", &num);
+  if (ret) {
+    printf("Shard %s has %ld keys\n", dbPath_.c_str(), num);
+    return num;
+  } else {
+    printf("Failed to get number of keys at shard %s\n", dbPath_.c_str());
+    return 0;
+  }
+}
+
+uint64_t RocksDBShard::GetDataSize() {
+  rocksdb::Range range(" ", "~");
+  uint64_t size;
+  db_->GetApproximateSizes(&range, 1, &size);
+  printf("Shard %s size = %ld\n", dbPath_.c_str(), size);
+  return size;
+}
+
 bool RocksDBInterface::Open(const char* dbPath,
                             int numShards,
                             int numIOThreads,
@@ -214,17 +234,24 @@ bool RocksDBInterface::Open(const char* dbPaths[],
                             int blockCacheMB,
                             CompactionStyle cstyle) {
   rocksdb::Env *env = rocksdb::Env::Default();
+  int bgThreadsLow, bgThreadsHigh;
   if (cstyle == UNIVERSAL_COMPACTION) {
     // Universal-compaction uses large number of shards, should restrict number of
     // compaction threads to contain space amplification.
-    env->SetBackgroundThreads((int)(numShards * 0.7), rocksdb::Env::Priority::LOW);
-    env->SetBackgroundThreads(numShards + 8, rocksdb::Env::Priority::HIGH);
-    printf("Choose universal compaction with %d shards\n", numShards);
+    bgThreadsLow = numShards * 0.6;
+    bgThreadsHigh = numShards + 8;
+    printf("Choose universal compaction with %d shards, bg-thread-low %d, "
+           "bg-thread-high %d\n",
+           numShards, bgThreadsLow, bgThreadsHigh);
   } else {
-    env->SetBackgroundThreads(numShards * 4, rocksdb::Env::Priority::LOW);
-    env->SetBackgroundThreads(numShards + 8, rocksdb::Env::Priority::HIGH);
-    printf("Choose level compaction with %d shards\n", numShards);
+    bgThreadsLow = numShards * 3;
+    bgThreadsHigh = numShards + 8;
+    printf("Choose level compaction with %d shards, bg-thread-low %d, "
+           "bg-thread-high %d\n",
+           numShards, bgThreadsLow, bgThreadsHigh);
   }
+  env->SetBackgroundThreads(bgThreadsLow, rocksdb::Env::Priority::LOW);
+  env->SetBackgroundThreads(bgThreadsHigh, rocksdb::Env::Priority::HIGH);
 
   int perShardCacheMB = blockCacheMB / numShards;
 
@@ -299,6 +326,7 @@ bool RocksDBInterface::ProcessRequest(void* p) {
     return dbShards_[shardID]->MultiGet(mget->requests);
   }
 
+  // Single request,
   KVRequest* request = (KVRequest*)(task->task.request);
   switch (request->type) {
   case GET:
@@ -307,6 +335,10 @@ bool RocksDBInterface::ProcessRequest(void* p) {
     return Put(request);
   case DELETE:
     return Delete(request);
+  case GET_NUMBER_RECORDS:
+    return GetNumberOfRecords(request);
+  case GET_DATA_SIZE:
+    return GetDataSize(request);
   default:
     err("unknown rqst: \n");
     DumpKVRequest(request);
@@ -478,3 +510,24 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
 
 }
 
+bool RocksDBInterface::GetNumberOfRecords(KVRequest* request) {
+  uint64_t num = 0;
+  for (int i = 0; i < dbShards_.size(); i++) {
+    num += dbShards_[i]->GetNumberOfRecords();
+  }
+  printf("Found %ld keys in %d shards\n",
+         num, dbShards_.size());
+  request->vlen = num;
+  return true;
+}
+
+bool RocksDBInterface::GetDataSize(KVRequest* request) {
+  uint64_t num = 0;
+  for (int i = 0; i < dbShards_.size(); i++) {
+    num += dbShards_[i]->GetDataSize();
+  }
+  printf("Total size = %ld bytes in %d shards\n",
+         num, dbShards_.size());
+  request->vlen = num;
+  return true;
+}

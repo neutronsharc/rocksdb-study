@@ -79,6 +79,10 @@ class RocksDBShard {
 
   bool Delete(KVRequest*  p);
 
+  uint64_t GetNumberOfRecords();
+
+  uint64_t GetDataSize();
+
   string dbPath_;
   rocksdb::DB* db_;
   rocksdb::Options options_;
@@ -144,6 +148,10 @@ class RocksDBInterface : public KVStore {
   bool Put(KVRequest*  p);
 
   bool Delete(KVRequest*  p);
+
+  bool GetNumberOfRecords(KVRequest* p);
+
+  bool GetDataSize(KVRequest* p);
 
   vector<string> dbPaths_;
   rocksdb::DB *db_;

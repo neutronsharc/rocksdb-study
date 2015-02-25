@@ -12,6 +12,8 @@ enum {
   GET = 0,
   PUT = 1,
   DELETE = 2,
+  GET_NUMBER_RECORDS = 3,
+  GET_DATA_SIZE = 4,
 };
 
 // KV request return code
