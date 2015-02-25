@@ -2,7 +2,7 @@ CC = gcc -g
 CXX = g++ -g -std=c++11
 ROCKSDB = /home/shawn/code/rocksdb
 CFLAGS = -g -I${ROCKSDB}/include
-CXXFLAGS = -g -I${ROCKSDB}/include
+CXXFLAGS = -g -I${ROCKSDB}/include -gdwarf-3
 LDFLAGS = -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 .PHONY: clean

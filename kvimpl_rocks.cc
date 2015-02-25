@@ -176,15 +176,39 @@ bool RocksDBInterface::Open(const char* dbPath,
                             int numShards,
                             int numIOThreads,
                             int blockCacheMB) {
+  const char *paths[1] = {dbPath};
   // Default to universal-style compaction.
-  return Open(dbPath, numShards, numIOThreads, blockCacheMB,
-      UNIVERSAL_COMPACTION);
+  return Open(paths, 1, numShards, numIOThreads, blockCacheMB,
+              UNIVERSAL_COMPACTION);
 }
 
 
 // Open a multi-shard DB. Also prepare an io-thread pool associated with
 // this DB to run rqsts against individual shards.
 bool RocksDBInterface::Open(const char* dbPath,
+                            int numShards,
+                            int numIOThreads,
+                            int blockCacheMB,
+                            CompactionStyle cstyle) {
+  const char *paths[1] = {dbPath};
+  return Open(paths, 1, numShards, numIOThreads, blockCacheMB, cstyle);
+}
+
+bool RocksDBInterface::Open(const char* dbPaths[],
+                            int numPaths,
+                            int numShards,
+                            int numIOThreads,
+                            int blockCacheMB) {
+
+  return Open(dbPaths, numPaths, numShards, numIOThreads,
+              blockCacheMB, UNIVERSAL_COMPACTION);
+}
+
+// Open a multi-shard DB that spans multiple directories.
+// Also prepare an io-thread pool associated with
+// this DB to run rqsts against individual shards.
+bool RocksDBInterface::Open(const char* dbPaths[],
+                            int numPaths,
                             int numShards,
                             int numIOThreads,
                             int blockCacheMB,
@@ -208,16 +232,20 @@ bool RocksDBInterface::Open(const char* dbPath,
   numIOThreads_ = numIOThreads;
   threadPool_.reset(new ThreadPool(numIOThreads, this));
   threadPool_->SetKVStore(this);
-  printf("DB interface %s: created IO pool with %d threads\n",
-         dbPath, numIOThreads);
+  printf("created IO pool with %d threads\n", numIOThreads);
 
   // Open DB shards.
-  dbPath_ = dbPath;
+  printf("Will open DB at %d locations\n", numPaths);
+  for (int i = 0; i < numPaths; i++) {
+    dbPaths_.push_back(dbPaths[i]);
+    printf("\t%s\n", dbPaths[i]);
+  }
+
   for (int i = 0; i < numShards; i++) {
     RocksDBShard* shard = new RocksDBShard();
     assert(shard != NULL);
 
-    string shardPath = string(dbPath) + string("/shard-") + std::to_string(i);
+    string shardPath = dbPaths_[i % numPaths] + string("/shard-") + std::to_string(i);
     assert(shard->OpenDB(shardPath, perShardCacheMB, cstyle, env));
 
     dbShards_.push_back(shard);
@@ -226,11 +254,12 @@ bool RocksDBInterface::Open(const char* dbPath,
   return true;
 }
 
-
 // Open RocksDB in only 1 shard.
+// TODO: delete this method. Obsoleted.
 bool RocksDBInterface::OpenDB(const char* dbPath,
                               int numIOThreads,
                               int blockCacheMB) {
+  return false;
 
   TuneUniversalStyleCompaction(&options_, blockCacheMB);
   writeOptions_.disableWAL = true;
@@ -243,7 +272,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   assert(s.ok());
   printf("Have opened DB %s\n", dbPath);
 
-  dbPath_ = dbPath;
+  //dbPath_ = dbPath;
 
   // Open the thread pool.
   numIOThreads_ = numIOThreads;

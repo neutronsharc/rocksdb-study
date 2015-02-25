@@ -97,7 +97,11 @@ class RocksDBInterface : public KVStore {
       delete shard;
     }
     if (db_) {
-      printf("close DB %s\n", dbPath_.c_str());
+      printf("close DB at: ");
+      for (int i = 0; i < dbPaths_.size(); i++) {
+        printf("%s ", dbPaths_[i].c_str());
+      }
+      printf("\n");
       delete db_;
       db_ = NULL;
     }
@@ -108,13 +112,26 @@ class RocksDBInterface : public KVStore {
   bool Open(const char* dbPath,
             int numShards,
             int numIOThreads,
-            int blockCacheMB,
-            CompactionStyle cstyle);
+            int blockCacheMB);
 
   bool Open(const char* dbPath,
             int numShards,
             int numIOThreads,
+            int blockCacheMB,
+            CompactionStyle cstyle);
+
+  bool Open(const char* dbPaths[],
+            int numPaths,
+            int numShards,
+            int numIOThreads,
             int blockCacheMB);
+
+  bool Open(const char* dbPaths[],
+            int numPaths,
+            int numShards,
+            int numIOThreads,
+            int blockCacheMB,
+            CompactionStyle cstyle);
 
   void PostRequest(void* p);
 
@@ -128,7 +145,7 @@ class RocksDBInterface : public KVStore {
 
   bool Delete(KVRequest*  p);
 
-  string dbPath_;
+  vector<string> dbPaths_;
   rocksdb::DB *db_;
   rocksdb::Options options_;
   rocksdb::WriteOptions writeOptions_;

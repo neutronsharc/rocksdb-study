@@ -27,6 +27,19 @@ void DumpKVRequest(KVRequest* p) {
   }
 }
 
+// Create/open DB atthe given paths. The DB consists of
+// multiple shards, and spans multiple locations.
+void* OpenDBMPath(const char* dbPaths[],
+                  int numPaths,
+                  int numShards,
+                  int cacheMB) {
+  // Use Universal-compaction by default.
+  int numIOThreads = numShards;
+  RocksDBInterface *rdb = new RocksDBInterface();
+  rdb->Open(dbPaths, numPaths, numShards, numIOThreads, cacheMB);
+  return (void*)rdb;
+}
+
 void* OpenDB(const char* dbPath, int numShards, int cacheMB) {
   // Use Universal-compaction by default.
   int numIOThreads = numShards;

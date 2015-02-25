@@ -1,6 +1,7 @@
 #include <time.h>
-#include <semaphore.h>
 #include <pthread.h>
+#include <semaphore.h>
+#include <string.h>
 #include <unistd.h>
 #include <bsd/stdlib.h>
 
@@ -407,7 +408,7 @@ void TryThreadPool() {
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
-  printf("-p <dbpath>          : rocksdb path. Must provide.\n");
+  printf("-p <dbpath>          : rocksdb paths separated by ','. Must provide.\n");
   printf("-w                   : re-write entire DB before test. Def to not\n");
   printf("-r                   : perform read benchmark after writing. Def to not\n");
   printf("-s <obj size>        : object size in bytes. Def = 1000\n");
@@ -425,7 +426,17 @@ void help() {
   printf("-h                   : this message\n");
 }
 
+vector<char*> SplitString(char *input, const char *delimiters) {
+  vector<char*> ss;
+  char *pch;
 
+  pch = strtok(input, delimiters);
+  while (pch) {
+    ss.push_back(pch);
+    pch = strtok(NULL, delimiters);
+  }
+  return ss;
+}
 
 int main(int argc, char** argv) {
   if (argc == 1) {
@@ -434,6 +445,7 @@ int main(int argc, char** argv) {
   }
 
   int c;
+  vector<char*> dbPaths;
   while ((c = getopt(argc, argv, "e:p:wrhs:n:t:c:q:k:o:S:")) != EOF) {
     switch(c) {
       case 'h':
@@ -441,6 +453,7 @@ int main(int argc, char** argv) {
         return 0;
       case 'p':
         dbPath = optarg;
+        dbPaths = SplitString(optarg, ",");
         printf("db path : %s\n", optarg);
         break;
       case 'w':
@@ -534,8 +547,9 @@ int main(int argc, char** argv) {
   assert(s.ok());
 #else
   // Open DB interface with sharding.
-  int iothreads = numShards * 2;
-  assert(iface.Open(dbPath.c_str(), numShards, iothreads, dbCacheMB));
+  int iothreads = numShards;
+  //assert(iface.Open(dbPath.c_str(), numShards, iothreads, dbCacheMB));
+  assert(iface.Open((const char**)&dbPaths[0], dbPaths.size(), numShards, iothreads, dbCacheMB));
 #endif
 
   struct timespec tbegin, tend;

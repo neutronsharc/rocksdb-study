@@ -47,7 +47,12 @@ struct KVRequest {
 // Open the DB
 extern void* OpenDB(const char* dbPath, int numShards, int cacheMB);
 
-// Open the DB
+extern void* OpenDBMPath(const char* dbPaths[],
+                         int numPaths,
+                         int numShards,
+                         int cacheMB);
+
+// Close the DB
 extern void CloseDB(void* dbHandler);
 
 // Run the requests, block until the rqsts finished,
