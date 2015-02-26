@@ -162,7 +162,7 @@ void Worker(WorkerTask *task) {
     for (int i = 0; i < task->numWrites; i++) {
       sprintf(key, "task-%d-key-%d", task->id, i);
       arc4random_buf(charvalue, objSize);
-      sprintf(charvalue, "task-%d-value-%d", task->id, i);
+      sprintf(charvalue, "valueof-task-%d-key-%d", task->id, i);
       charvalue[strlen(charvalue)] = ' ';
       // memcached protocol requires '\r\n' at end of value.
       charvalue[objSize] = '\r';
@@ -170,6 +170,8 @@ void Worker(WorkerTask *task) {
       //rocksdb::Slice keyslice(key, strlen(key));
       //rocksdb::Slice valueslice(charvalue, objSize + 2);
       KVRequest rqst;
+      memset(&rqst, 0, sizeof(rqst));
+      rqst.type = PUT;
       rqst.key = key;
       rqst.keylen = strlen(key);
       rqst.value = charvalue;
@@ -209,17 +211,17 @@ void Worker(WorkerTask *task) {
 
   if (task->doRead) {
     sem_wait(&task->sem_begin);
-    int warmups = 500000;
+    int warmups = 50000;
     // Warm up read.
     printf("worker %d will do %d warm-up reads ...\n", task->id, warmups);
     for (int i = 0; i < warmups; i++) {
       unsigned long objID = get_random(task->numWrites);
       sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
       KVRequest rqst;
-      rqst.reserved = NULL;
+      memset(&rqst, 0, sizeof(rqst));
+      rqst.type = GET;
       rqst.key = key;
       rqst.keylen = strlen(key);
-      rqst.value = NULL;
       assert(task->dbIface->Get(&rqst) == true);
       if (rqst.retcode != SUCCESS) {
         printf("cannot find key %s\n", rqst.key);
@@ -237,6 +239,7 @@ void Worker(WorkerTask *task) {
     for (int i = 0; i < task->numReads; i++) {
       if (numKeysPerRead > 1) {
         KVRequest rqsts[numKeysPerRead];
+        memset(rqsts, 0, sizeof(KVRequest) * numKeysPerRead);
         //vector<rocksdb::Slice> keySlices;
         //vector<string> values;
         t1 = time_microsec();
@@ -270,7 +273,7 @@ void Worker(WorkerTask *task) {
           assert(rqsts[k].vlen == objSize + 2);
           int tidAtKey, vidAtKey, tidAtValue, vidAtValue;
           sscanf(rqsts[k].key, "task-%d-key-%d", &tidAtKey, &vidAtKey);
-          sscanf(rqsts[k].value, "task-%d-value-%d", &tidAtValue, &vidAtValue);
+          sscanf(rqsts[k].value, "valueof-task-%d-key-%d", &tidAtValue, &vidAtValue);
           assert(tidAtKey == task->id);
           assert(tidAtKey == tidAtValue);
           assert(vidAtKey == vidAtValue);
@@ -280,6 +283,7 @@ void Worker(WorkerTask *task) {
         unsigned long objID = get_random(task->numWrites);
         sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
         KVRequest rqst;
+        memset(&rqst, 0, sizeof(rqst));
         rqst.key = key;
         rqst.keylen = strlen(key);
         rqst.type = GET;
@@ -299,7 +303,7 @@ void Worker(WorkerTask *task) {
           assert(rqst.vlen == objSize || rqst.vlen == objSize + 2);
           int rid, rval;
           //sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
-          sscanf(rqst.value, "task-%d-value-%d", &rid, &rval);
+          sscanf(rqst.value, "valueof-task-%d-key-%d", &rid, &rval);
           assert(rid == task->id);
           assert(rval == (int)objID);
           free(rqst.value);
@@ -439,6 +443,7 @@ void Write(string key, RocksDBInterface *dbIface) {
   buf[strlen(buf)] = ' ';
   buf[objSize] = 0;
   KVRequest rqst;
+  memset(&rqst, 0, sizeof(rqst));
   rqst.key = key.data();
   rqst.keylen = key.size();
   rqst.value = buf;
@@ -451,9 +456,9 @@ void Write(string key, RocksDBInterface *dbIface) {
 
 void Read(string key, RocksDBInterface *dbIface) {
   KVRequest rqst;
+  memset(&rqst, 0, sizeof(rqst));
   rqst.key = key.data();
   rqst.keylen = key.size();
-  rqst.value = NULL;
 
   assert(dbIface->Get(&rqst) == true);
   if (rqst.retcode != SUCCESS) {
@@ -573,14 +578,6 @@ int main(int argc, char** argv) {
   //TuneUniversalStyleCompaction(&options, dbCacheMB);
   //TuneLevelStyleCompaction(&options, dbCacheMB);
 
-  rocksdb::WriteOptions writeOptions;
-  writeOptions.disableWAL = true;
-
-  rocksdb::ReadOptions readOptions;
-  // save index/filter/data blocks in block cache.
-  readOptions.fill_cache = true;
-  readOptions.verify_checksums = true;
-
 #if 0
   // Open normal DB
   s = rocksdb::DB::Open(options, dbPath, &db);
@@ -610,10 +607,6 @@ int main(int argc, char** argv) {
   // Init random number.
   clock_gettime(CLOCK_MONOTONIC, &tbegin);
   std::srand(tbegin.tv_nsec);
-
-  // Put key-value
-  //s = db->Put(WriteOptions(), "key", "value");
-  //assert(s.ok());
 
   // seq write objs.
   //int numObjs = 1000 * 1000 * 60;
@@ -649,10 +642,10 @@ int main(int argc, char** argv) {
     sem_init(&tasks[i].sem_begin, 0, 0);
     sem_init(&tasks[i].sem_end, 0, 0);
 
-    tasks[i].db = db;
+    //tasks[i].db = db;
     tasks[i].dbIface = &iface;
-    tasks[i].writeOptions = writeOptions;
-    tasks[i].readOptions = readOptions;
+    //tasks[i].writeOptions = writeOptions;
+    //tasks[i].readOptions = readOptions;
 
     tasks[i].outputLock = &outputLock;
 
@@ -722,91 +715,5 @@ int main(int argc, char** argv) {
   delete [] workers;
   delete [] readLatency;
   delete [] writeLatency;
-  delete db;
-  return 0;
-
-
-  char key[100];
-  char charvalue[1024];
-
-  long objSize = 1023;
-
-
-  clock_gettime(CLOCK_MONOTONIC, &tbegin);
-  for (int i = 0; i < writeObjCount; i++) {
-    sprintf(key, "key-%d", i);
-    sprintf(charvalue, "value-%d", i);
-    memset(charvalue + strlen(charvalue), 'A', 1024 - strlen(charvalue));
-    charvalue[1023] = 0;
-
-    clock_gettime(CLOCK_MONOTONIC, &objBegin);
-    //s = db->Put(WriteOptions(), key, charvalue);
-    s = db->Put(writeOptions, key, charvalue);
-    clock_gettime(CLOCK_MONOTONIC, &objEnd);
-    writeLatency[i] = get_diff_microsec(&objBegin, &objEnd);
-
-    assert(s.ok());
-    if ((i + 1) % 100000 == 0) {
-      cout << "put " << i + 1 << endl;
-    }
-  }
-  clock_gettime(CLOCK_MONOTONIC, &tend);
-
-  elapsedMicroSec = get_diff_microsec(&tbegin, &tend);
-  elapsedMilliSec = get_diff_millisec(&tbegin, &tend);
-  cout << "has put " << writeObjCount << " objs" << " in "
-       << elapsedMilliSec / 1000.0 << " seconds, "
-       << "data = " << (objSize * writeObjCount / 1024.0 / 1024) << " MB, "
-       << "IOPS = " << writeObjCount / (elapsedMilliSec / 1000.0) << endl;
-  cout << "avg put lat (ms) = " << (double)elapsedMilliSec / writeObjCount << endl;
-
-  sort(writeLatency, writeLatency + writeObjCount);
-  PrintStats(writeLatency, writeObjCount, "Put latency in ms");
-
-
-  //std::string value;
-  // get value
-  //s = db->Get(ReadOptions(), "key", &value);
-  //assert(s.ok());
-  //assert(value == "value");
-
-  // seq read objs.
-  clock_gettime(CLOCK_MONOTONIC, &tbegin);
-  for (int i = 0; i < readObjCount; i++) {
-    std::string value;
-    unsigned long objID = get_random(writeObjCount);
-    sprintf(key, "key-%d", (int)(objID));
-
-    clock_gettime(CLOCK_MONOTONIC, &objBegin);
-    //s = db->Get(ReadOptions(), key, &value);
-    s = db->Get(readOptions, key, &value);
-    clock_gettime(CLOCK_MONOTONIC, &objEnd);
-    readLatency[i] = get_diff_microsec(&objBegin, &objEnd);
-
-    assert(s.ok());
-    assert(value.length() == 1023);
-    int rval;
-    sscanf(value.c_str(), "value-%d", &rval);
-    assert(rval == (int)objID);
-    if ((i + 1) % 100000 == 0) {
-      cout << "get " << i + 1 << endl;
-    }
-  }
-  clock_gettime(CLOCK_MONOTONIC, &tend);
-
-  elapsedMicroSec = get_diff_microsec(&tbegin, &tend);
-  elapsedMilliSec = get_diff_millisec(&tbegin, &tend);
-  cout << "has get " << readObjCount << " objs" << " in "
-       << elapsedMilliSec / 1000.0 << " seconds, "
-       << "IOPS = " << readObjCount / (elapsedMilliSec / 1000.0) << endl;
-  cout << "avg get lat (ms) = " << (double)elapsedMilliSec / readObjCount << endl;
-
-  sort(readLatency, readLatency + readObjCount);
-  PrintStats(readLatency, readObjCount, "Get latency in ms");
-
-  delete [] workers;
-  delete [] readLatency;
-  delete [] writeLatency;
-  delete db;
   return 0;
 }

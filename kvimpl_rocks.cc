@@ -70,7 +70,8 @@ bool RocksDBShard::OpenDB(const string& dbPath,
 
 bool RocksDBShard::Get(KVRequest*  p)  {
   string value;
-  rocksdb::Status status = db_->Get(readOptions_, p->key, &value);
+  rocksdb::Slice key(p->key, p->keylen);
+  rocksdb::Status status = db_->Get(readOptions_, key, &value);
   if (status.ok()) {
     p->vlen = value.length();
     p->value = (char*)malloc(p->vlen);
@@ -113,7 +114,8 @@ bool RocksDBShard::Put(KVRequest*  p)  {
 }
 
 bool RocksDBShard::Delete(KVRequest*  p) {
-  rocksdb::Status status = db_->Delete(writeOptions_, p->key);
+  rocksdb::Slice key(p->key, p->keylen);
+  rocksdb::Status status = db_->Delete(writeOptions_, key);
   dbg("delete key %s: ret = %s\n", p->key, status.ToString().c_str());
   if (status.ok()) {
   } else {

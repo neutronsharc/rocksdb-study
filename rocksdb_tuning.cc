@@ -17,15 +17,13 @@
 #include "rocksdb/compaction_filter.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/env.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/merge_operator.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/table.h"
 #include "rocksdb/table_properties.h"
-#include "rocksdb/filter_policy.h"
-//#include "table/block_based_table_factory.h"
-//#include "util/statistics.h"
 
 #include "debug.h"
 #include "rocksdb_tuning.h"
@@ -40,7 +38,7 @@ static size_t min_block_cache_size_MB = 160;
 static bool cache_index_and_filter_blocks = true;
 
 static void TunePointLookup(rocksdb::Options *options, int blkCacheMB) {
-  //prefix_extractor.reset(rocksdb::NewNoopTransform());
+  options->prefix_extractor.reset(rocksdb::NewNoopTransform());
   rocksdb::BlockBasedTableOptions block_based_options;
 
   block_based_options.index_type = rocksdb::BlockBasedTableOptions::kHashSearch;

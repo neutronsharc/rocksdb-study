@@ -109,13 +109,14 @@ class WorkQueue {
 static void GetWork(void *p, int id, KVStore* kvstore) {
   void *data;
   WorkQueue *wq = (WorkQueue*)p;
-  printf("KV store thread %d started, kvstore = %p...\n", id, kvstore);
+  printf("KV store worker thread %d started, kvstore = %p...\n",
+         id, kvstore);
   while (data = wq->GetNext()) {
     if (kvstore) {
       kvstore->ProcessRequest(data);
     }
   }
-  printf("KV store thread %d stopped...\n", id);
+  printf("KV store worker thread %d stopped...\n", id);
 }
 
 
