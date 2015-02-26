@@ -32,7 +32,7 @@ struct KVRequest {
   int type;
 
   // key and length, provided by caller
-  char *key;
+  const char *key;
   int keylen;
 
   // Value and length. For "get" these are set by DB.

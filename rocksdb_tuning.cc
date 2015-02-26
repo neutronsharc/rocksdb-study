@@ -12,9 +12,53 @@
 #include <string>
 #include <thread>
 
+#include "rocksdb/table.h"
+#include "rocksdb/cache.h"
+#include "rocksdb/compaction_filter.h"
+#include "rocksdb/comparator.h"
+#include "rocksdb/env.h"
+#include "rocksdb/memtablerep.h"
+#include "rocksdb/merge_operator.h"
+#include "rocksdb/slice.h"
+#include "rocksdb/slice_transform.h"
+#include "rocksdb/table.h"
+#include "rocksdb/table_properties.h"
+#include "rocksdb/filter_policy.h"
+//#include "table/block_based_table_factory.h"
+//#include "util/statistics.h"
+
 #include "debug.h"
 #include "rocksdb_tuning.h"
 
+
+// memory budget for each DB shard.
+static size_t write_buffer_size = 16L * 1024 * 1024;
+static int max_write_buffer_number = 4;
+static size_t min_block_cache_size_MB = 160;
+// Whether to put idx/filter blocks in block cache. This is to contain memory
+// consumption.
+static bool cache_index_and_filter_blocks = true;
+
+static void TunePointLookup(rocksdb::Options *options, int blkCacheMB) {
+  //prefix_extractor.reset(rocksdb::NewNoopTransform());
+  rocksdb::BlockBasedTableOptions block_based_options;
+
+  block_based_options.index_type = rocksdb::BlockBasedTableOptions::kHashSearch;
+
+  block_based_options.cache_index_and_filter_blocks = true;
+
+  block_based_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
+
+  if (blkCacheMB < min_block_cache_size_MB) {
+    blkCacheMB = min_block_cache_size_MB;
+  }
+  block_based_options.block_cache =
+      rocksdb::NewLRUCache(static_cast<size_t>(blkCacheMB * 1024 * 1024));
+
+  options->table_factory.reset(rocksdb::NewBlockBasedTableFactory(block_based_options));
+
+  options->memtable_factory.reset(rocksdb::NewHashLinkListRepFactory());
+}
 
 void TuneUniversalStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   printf("Use universal-style compaction\n");
@@ -22,20 +66,17 @@ void TuneUniversalStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   //options->IncreaseParallelism();
   options->OptimizeUniversalStyleCompaction();
 
-  // Want point query.
-  if (blkCacheMB < 128) {
-    blkCacheMB = 128;
-  }
   options->OptimizeForPointLookup(blkCacheMB);
-
+  // Fine tune some parameters for point query.
+  TunePointLookup(options, blkCacheMB);
 
   // create the DB if it's not already present
   options->create_if_missing = true;
 
   options->max_open_files = 2000;
   options->allow_os_buffer = true;
-  options->write_buffer_size = 1024L * 1024 * 32;
-  options->max_write_buffer_number = 8;
+  options->write_buffer_size = write_buffer_size;
+  options->max_write_buffer_number = max_write_buffer_number;
 
   options->min_write_buffer_number_to_merge = 2;
   options->level0_file_num_compaction_trigger = 4;
@@ -46,8 +87,7 @@ void TuneUniversalStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
 
   //options.disable_auto_compactions = true;
   options->max_background_compactions = 8;
-  options->max_background_flushes = 2;
-
+  options->max_background_flushes = 1;
 }
 
 void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
@@ -59,18 +99,17 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   //   def to 512 MB memtable
   options->OptimizeLevelStyleCompaction();
 
-  // Want point query.
-  if (blkCacheMB < 128) {
-    blkCacheMB = 128;
-  }
   options->OptimizeForPointLookup(blkCacheMB);
+  // Fine tune some parameters for point query.
+  TunePointLookup(options, blkCacheMB);
 
   // create the DB if it's not already present
   options->create_if_missing = true;
+
   options->max_open_files = 2000;
   options->allow_os_buffer = true;
-  options->write_buffer_size = 1024L * 1024 * 32;
-  options->max_write_buffer_number = 8;
+  options->write_buffer_size = write_buffer_size;
+  options->max_write_buffer_number = max_write_buffer_number;
 
   options->min_write_buffer_number_to_merge = 2;
   options->level0_file_num_compaction_trigger = 4;
@@ -79,5 +118,5 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   options->compression = rocksdb::kNoCompression;
 
   options->max_background_compactions = 8;
-  options->max_background_flushes = 2;
+  options->max_background_flushes = 1;
 }

@@ -180,7 +180,7 @@ void Worker(WorkerTask *task) {
       assert(task->dbIface->Put(&rqst) == true);
       t2 = time_microsec();
       task->writeLatency[i] = t2 - t1;
-      assert(status.ok());
+      //assert(status.ok());
       if ((i + 1) % 500000 == 0) {
         printf("task %d: write %d \n", task->id, i + 1);
       }
@@ -427,7 +427,42 @@ void help() {
          "                       Def = 1000000 op/sec\n");
   printf("-k <multiget keys>   : multi-get these number of keys in one get.\n"
          "                       def = 1 key\n");
+  printf("-x <key>             : write this key with random value of given size\n");
+  printf("-y <key>             : read this key from DB\n");
   printf("-h                   : this message\n");
+}
+
+void Write(string key, RocksDBInterface *dbIface) {
+  char buf[objSize + 1];
+  arc4random_buf(buf, objSize);
+  sprintf(buf, "%s", key.c_str());
+  buf[strlen(buf)] = ' ';
+  buf[objSize] = 0;
+  KVRequest rqst;
+  rqst.key = key.data();
+  rqst.keylen = key.size();
+  rqst.value = buf;
+  rqst.vlen = objSize;
+
+  assert(dbIface->Put(&rqst) == true);
+  printf("write key: %s, vlen = %ld, value = %s\n",
+         rqst.key, rqst.vlen, rqst.value);
+}
+
+void Read(string key, RocksDBInterface *dbIface) {
+  KVRequest rqst;
+  rqst.key = key.data();
+  rqst.keylen = key.size();
+  rqst.value = NULL;
+
+  assert(dbIface->Get(&rqst) == true);
+  if (rqst.retcode != SUCCESS) {
+    printf("cannot find key %s\n", rqst.key);
+  } else {
+    printf("key: %s, vlen=%ld, value: %s\n",
+           rqst.key, rqst.vlen, rqst.value);
+    free(rqst.value);
+  }
 }
 
 int main(int argc, char** argv) {
@@ -438,7 +473,10 @@ int main(int argc, char** argv) {
 
   int c;
   vector<char*> dbPaths;
-  while ((c = getopt(argc, argv, "e:p:wrhs:n:t:c:q:k:o:S:")) != EOF) {
+  bool singleRead = false, singleWrite = false;
+  string singleReadKey, singleWriteKey;
+
+  while ((c = getopt(argc, argv, "e:p:wrhs:n:t:c:q:k:o:S:x:y:")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -451,6 +489,16 @@ int main(int argc, char** argv) {
       case 'w':
         doWrite = true;
         printf("will re-write all before test.\n");
+        break;
+      case 'x':
+        singleWrite = true;
+        singleWriteKey = optarg;
+        printf("will single write key %s\n", optarg);
+        break;
+      case 'y':
+        singleRead = true;
+        singleReadKey = optarg;
+        printf("will single read key %s\n", optarg);
         break;
       case 'r':
         doRead = true;
@@ -543,6 +591,16 @@ int main(int argc, char** argv) {
   //assert(iface.Open(dbPath.c_str(), numShards, iothreads, dbCacheMB));
   assert(iface.Open((const char**)&dbPaths[0], dbPaths.size(), numShards, iothreads, dbCacheMB));
 #endif
+
+  if (singleWrite) {
+    Write(singleWriteKey, &iface);
+  }
+  if (singleRead) {
+    Read(singleReadKey, &iface);
+  }
+  if (singleWrite || singleRead) {
+    return 0;
+  }
 
   struct timespec tbegin, tend;
   struct timespec objBegin, objEnd;

@@ -58,7 +58,10 @@ bool RocksDBShard::OpenDB(const string& dbPath,
   readOptions_.verify_checksums = true;
 
   rocksdb::Status s = rocksdb::DB::Open(options_, dbPath, &db_);
-  assert(s.ok());
+  if (!s.ok()) {
+    printf("Failed to open shard %s: %s\n", dbPath.data(), s.ToString().c_str());
+    assert(0);
+  }
   printf("Have opened DB %s\n", dbPath.c_str());
 
   dbPath_ = dbPath;
