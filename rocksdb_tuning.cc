@@ -43,7 +43,7 @@ static void TunePointLookup(rocksdb::Options *options, int blkCacheMB) {
 
   block_based_options.index_type = rocksdb::BlockBasedTableOptions::kHashSearch;
 
-  block_based_options.cache_index_and_filter_blocks = true;
+  block_based_options.cache_index_and_filter_blocks = false;
 
   block_based_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
 

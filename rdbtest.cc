@@ -211,7 +211,7 @@ void Worker(WorkerTask *task) {
 
   if (task->doRead) {
     sem_wait(&task->sem_begin);
-    int warmups = 5000;
+    int warmups = 100000;
     // Warm up read.
     printf("worker %d will do %d warm-up reads ...\n", task->id, warmups);
     for (int i = 0; i < warmups; i++) {
