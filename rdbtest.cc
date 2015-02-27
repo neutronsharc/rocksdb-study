@@ -86,6 +86,8 @@ int numShards = 8;
 
 vector<rocksdb::ColumnFamilyHandle*> familyHandles;
 
+uint64_t GetMemoryUsage(RocksDBInterface *dbIface);
+
 unsigned long time_microsec() {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
@@ -310,7 +312,8 @@ void Worker(WorkerTask *task) {
         }
       }
       if ((i + 1) % 500000 == 0) {
-        printf("task %d: read %d \n", task->id, i + 1);
+        printf("task %d: read %d, see cache-table mem usage: %ld\n",
+               task->id, i + 1, GetMemoryUsage(task->dbIface));
       }
       // Throttle to target QPS.
       unsigned long actualSpentTime = time_microsec() - tBeginUs;
