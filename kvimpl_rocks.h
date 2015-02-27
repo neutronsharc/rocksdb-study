@@ -83,6 +83,8 @@ class RocksDBShard {
 
   uint64_t GetDataSize();
 
+  uint64_t GetMemoryUsage();
+
   string dbPath_;
   rocksdb::DB* db_;
   rocksdb::Options options_;
@@ -152,6 +154,8 @@ class RocksDBInterface : public KVStore {
   bool GetNumberOfRecords(KVRequest* p);
 
   bool GetDataSize(KVRequest* p);
+
+  bool GetMemoryUsage(KVRequest* p);
 
   vector<string> dbPaths_;
   rocksdb::DB *db_;

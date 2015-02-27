@@ -211,7 +211,7 @@ void Worker(WorkerTask *task) {
 
   if (task->doRead) {
     sem_wait(&task->sem_begin);
-    int warmups = 50000;
+    int warmups = 5000;
     // Warm up read.
     printf("worker %d will do %d warm-up reads ...\n", task->id, warmups);
     for (int i = 0; i < warmups; i++) {
@@ -470,6 +470,14 @@ void Read(string key, RocksDBInterface *dbIface) {
   }
 }
 
+uint64_t GetMemoryUsage(RocksDBInterface *dbIface) {
+  KVRequest rqst;
+  memset(&rqst, 0, sizeof(rqst));
+  rqst.type = GET_MEMORY_USAGE;
+  dbIface->GetMemoryUsage(&rqst);
+  return rqst.vlen;
+}
+
 int main(int argc, char** argv) {
   if (argc == 1) {
     help();
@@ -672,6 +680,8 @@ int main(int argc, char** argv) {
     PrintStats(writeLatency, writeObjCount, "\nOverall write latency in ms");
     printf("\nwait for background activities to settle...\n");
     sleep(3);
+    printf("\ntable-cache memory usage after write: %ld\n",
+           GetMemoryUsage(&iface));
   }
 
   // start worker to read.
@@ -686,6 +696,9 @@ int main(int argc, char** argv) {
       sem_wait(&tasks[i].sem_end);
     }
 
+    printf("\ntable-cache memory usage after warmup-read: %ld\n",
+           GetMemoryUsage(&iface));
+
     printf("\n\nMain: will start read phase...\n");
 
     t1 = time_microsec();
@@ -697,6 +710,8 @@ int main(int argc, char** argv) {
       sem_wait(&tasks[i].sem_end);
     }
     timeTotal = time_microsec() - t1;
+    printf("\ntable-cache memory usage after read: %ld\n",
+           GetMemoryUsage(&iface));
   }
 
   for (int i = 0; i < numTasks; i++) {

@@ -197,6 +197,19 @@ uint64_t RocksDBShard::GetDataSize() {
   return size;
 }
 
+uint64_t RocksDBShard::GetMemoryUsage() {
+  uint64_t num;
+  bool ret = db_->GetIntProperty("rocksdb.estimate-table-readers-mem", &num);
+  if (ret) {
+    printf("Shard %s uses %ld memory\n", dbPath_.c_str(), num);
+    return num;
+  } else {
+    printf("Failed to get memory usage at shard %s\n", dbPath_.c_str());
+    return 0;
+  }
+}
+
+
 bool RocksDBInterface::Open(const char* dbPath,
                             int numShards,
                             int numIOThreads,
@@ -336,14 +349,22 @@ bool RocksDBInterface::ProcessRequest(void* p) {
   switch (request->type) {
   case GET:
     return Get(request);
+
   case PUT:
     return Put(request);
+
   case DELETE:
     return Delete(request);
+
   case GET_NUMBER_RECORDS:
     return GetNumberOfRecords(request);
+
   case GET_DATA_SIZE:
     return GetDataSize(request);
+
+  case GET_MEMORY_USAGE:
+    return GetMemoryUsage(request);
+
   default:
     err("unknown rqst: \n");
     DumpKVRequest(request);
@@ -532,6 +553,17 @@ bool RocksDBInterface::GetDataSize(KVRequest* request) {
     num += dbShards_[i]->GetDataSize();
   }
   printf("Total size = %ld bytes in %d shards\n",
+         num, dbShards_.size());
+  request->vlen = num;
+  return true;
+}
+
+bool RocksDBInterface::GetMemoryUsage(KVRequest* request) {
+  uint64_t num = 0;
+  for (int i = 0; i < dbShards_.size(); i++) {
+    num += dbShards_[i]->GetMemoryUsage();
+  }
+  printf("Total memory ussed = %ld bytes in %d shards\n",
          num, dbShards_.size());
   request->vlen = num;
   return true;

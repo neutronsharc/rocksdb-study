@@ -14,6 +14,7 @@ enum {
   DELETE = 2,
   GET_NUMBER_RECORDS = 3,
   GET_DATA_SIZE = 4,
+  GET_MEMORY_USAGE = 5,
 };
 
 // KV request return code
