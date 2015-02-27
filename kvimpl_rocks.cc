@@ -24,21 +24,6 @@
 #include "kvimpl_rocks.h"
 #include "rocksdb_tuning.h"
 
-/*
-static void ProcessOneRequest(void* p) {
-    KVRequest* request = (KVRequest*)p;
-    //DumpKVRequest(request);
-    switch (request->type) {
-    case GET:
-      break;
-    case PUT:
-      break;
-    case DELETE:
-      break;
-    default:
-      printf("unknown rqst\n");
-    }
-} */
 
 bool RocksDBShard::OpenDB(const string& dbPath,
                           int blockCacheMB,
@@ -181,7 +166,6 @@ uint64_t RocksDBShard::GetNumberOfRecords() {
   uint64_t num;
   bool ret = db_->GetIntProperty("rocksdb.estimate-num-keys", &num);
   if (ret) {
-    printf("Shard %s has %ld keys\n", dbPath_.c_str(), num);
     return num;
   } else {
     printf("Failed to get number of keys at shard %s\n", dbPath_.c_str());
@@ -193,7 +177,6 @@ uint64_t RocksDBShard::GetDataSize() {
   rocksdb::Range range(" ", "~");
   uint64_t size;
   db_->GetApproximateSizes(&range, 1, &size);
-  printf("Shard %s size = %ld\n", dbPath_.c_str(), size);
   return size;
 }
 
@@ -201,7 +184,6 @@ uint64_t RocksDBShard::GetMemoryUsage() {
   uint64_t num;
   bool ret = db_->GetIntProperty("rocksdb.estimate-table-readers-mem", &num);
   if (ret) {
-    printf("Shard %s uses %ld memory\n", dbPath_.c_str(), num);
     return num;
   } else {
     printf("Failed to get memory usage at shard %s\n", dbPath_.c_str());
@@ -541,8 +523,6 @@ bool RocksDBInterface::GetNumberOfRecords(KVRequest* request) {
   for (int i = 0; i < dbShards_.size(); i++) {
     num += dbShards_[i]->GetNumberOfRecords();
   }
-  printf("Found %ld keys in %d shards\n",
-         num, dbShards_.size());
   request->vlen = num;
   return true;
 }
@@ -552,8 +532,6 @@ bool RocksDBInterface::GetDataSize(KVRequest* request) {
   for (int i = 0; i < dbShards_.size(); i++) {
     num += dbShards_[i]->GetDataSize();
   }
-  printf("Total size = %ld bytes in %d shards\n",
-         num, dbShards_.size());
   request->vlen = num;
   return true;
 }
@@ -563,8 +541,6 @@ bool RocksDBInterface::GetMemoryUsage(KVRequest* request) {
   for (int i = 0; i < dbShards_.size(); i++) {
     num += dbShards_[i]->GetMemoryUsage();
   }
-  printf("Total memory ussed = %ld bytes in %d shards\n",
-         num, dbShards_.size());
   request->vlen = num;
   return true;
 }
