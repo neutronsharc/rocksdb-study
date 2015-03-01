@@ -58,6 +58,8 @@ extern int KVRunCommand(void* dbHandler, KVRequest* request, int numRequest);
 
 extern void DumpKVRequest(KVRequest* p);
 
+extern void ReleaseMemory(void* p);
+
 //unsigned long time_microsec();
 
 #ifdef __cplusplus

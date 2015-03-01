@@ -94,3 +94,7 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
   }
   return numRequests;
 }
+
+void ReleaseMemory(void* p) {
+  free(p);
+}
