@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <ctime>
 
 #include "utils.h"
 
@@ -342,4 +343,14 @@ int CreateTimer(timer_t *tm,
 
 void DeleteTimer(timer_t *tm) {
     timer_delete(*tm);
+}
+
+std::string TimestampString() {
+  std::time_t now = std::time(NULL);
+  std::tm *ptm = std::localtime(&now);
+  char buffer[100];
+
+  // Format: yyyy-mm-dd hh:mm:ss
+  std::strftime(buffer, 100, "%Y-%m-%d %H:%M:%S", ptm);
+  return std::string(buffer);
 }

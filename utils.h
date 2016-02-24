@@ -120,4 +120,7 @@ int CreateTimer(timer_t *tm,
 
 void DeleteTimer(timer_t *tm);
 
+
+std::string TimestampString();
+
 #endif  // __UTILS_H__

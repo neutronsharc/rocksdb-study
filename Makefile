@@ -16,8 +16,8 @@ all: rdbtest kvlib.a
 kvlib.a : $(objs) libhdrhistogram
 	ar crvs $@ $(objs)  hdr_histogram/lib_hdr_histogram.a
 
-rdbtest : $(objs) rdbtest.o libhdrhistogram
-	g++ -std=c++11 -g rdbtest.o $(objs) hdr_histogram/lib_hdr_histogram.a -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
+rdbtest : rdbtest.o kvlib.a libhdrhistogram
+	g++ -std=c++11 -g rdbtest.o kvlib.a hdr_histogram/lib_hdr_histogram.a -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a -lpthread -lrt -lsnappy -lz -lbz2 -lbsd
 
 libhdrhistogram : force_look
 	cd hdr_histogram; $(MAKE) $(MFLAGS)
