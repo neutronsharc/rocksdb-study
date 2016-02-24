@@ -25,6 +25,7 @@
 #include "kvimpl_rocks.h"
 #include "rocksdb_tuning.h"
 #include "utils.h"
+#include "hdr_histogram.h"
 
 using namespace std;
 
