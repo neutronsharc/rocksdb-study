@@ -29,63 +29,65 @@
 
 using namespace std;
 
+namespace {
+
 struct WorkerTask {
   // worker thread ID
   int id;
 
-  bool doRead;
-  bool doWrite;
+  bool do_read;
+  bool do_write;
 
   // Number of r/w to perform
-  unsigned long numWrites;
-  unsigned long numReads;
+  unsigned long num_writes;
+  unsigned long num_reads;
 
   // number of failures.
-  unsigned long writeFailures;
-  unsigned long readFailures;
+  unsigned long write_failures;
+  unsigned long read_failures;
 
   // Target qps issued by this worker.
-  unsigned long targetQPS;
+  unsigned long target_qps;
 
   // Target qps for write ops by this worker.
-  unsigned long writeTargetQPS;
+  unsigned long write_target_qps;
 
   // ratio of write ops, 0.0 ~ 1.0. Main thread will set this value.
-  double writeRatio;
+  double write_ratio;
 
   // record operation latency in micro-sec.
-  int *writeLatency;
-  int *readLatency;
+  int *write_latency;
+  int *read_latency;
 
   // semaphores to sync with main thread.
   sem_t sem_begin;
   sem_t sem_end;
 
   rocksdb::DB *db;
-  rocksdb::WriteOptions writeOptions;
-  rocksdb::ReadOptions readOptions;
+  rocksdb::WriteOptions write_options;
+  rocksdb::ReadOptions read_options;
 
-  RocksDBInterface* dbIface;
+  RocksDBInterface* db_iface;
 
   // A lock to sync output.
-  mutex *outputLock;
+  mutex *output_lock;
 };
 
 
-string dbPath;
-bool doWrite = false;
-bool doRead = false;
-int numThreads = 1;
-int objSize = 1000;
-long numObjs = 1000L;
-long numOps = 1000L;
-long dbCacheMB = 5000L;
-long totalTargetQPS = 1000000L;
-long totalWriteTargetQPS = 1000000L;
-int numKeysPerRead = 1;
-int numShards = 8;
+string db_path;
+bool do_write = false;
+bool do_read = false;
+int num_threads = 1;
+int obj_size = 1000;
+long num_objs = 1000L;
+long num_ops = 1000L;
+long db_cache_mb = 5000L;
+long total_target_qps = 1000000L;
+long total_write_target_qps = 1000000L;
+int num_keys_per_read = 1;
+int num_shards = 8;
 
-vector<rocksdb::ColumnFamilyHandle*> familyHandles;
+vector<rocksdb::ColumnFamilyHandle*> family_handles;
 
 uint64_t GetMemoryUsage(RocksDBInterface *dbIface);
 
@@ -150,82 +152,82 @@ void Worker(WorkerTask *task) {
 
   char key[128];
   char charvalue[10002];
-  assert(objSize <= 10000);
+  assert(obj_size <= 10000);
 
   rocksdb::Status status;
   unsigned long tBeginUs, tEndUs, t1, t2;
 
-  long elapsedMicroSec;
+  long elapsed_usec;
 
-  if (task->doWrite) {
-    printf("worker %d will do %d writes...\n", task->id, task->numWrites);
+  if (task->do_write) {
+    printf("worker %d will do %d writes...\n", task->id, task->num_writes);
     sem_wait(&task->sem_begin);
 
     tBeginUs = time_microsec();
-    for (int i = 0; i < task->numWrites; i++) {
+    for (int i = 0; i < task->num_writes; i++) {
       sprintf(key, "task-%d-key-%d", task->id, i);
-      arc4random_buf(charvalue, objSize);
+      arc4random_buf(charvalue, obj_size);
       sprintf(charvalue, "valueof-task-%d-key-%d", task->id, i);
       charvalue[strlen(charvalue)] = ' ';
       // memcached protocol requires '\r\n' at end of value.
-      charvalue[objSize] = '\r';
-      charvalue[objSize + 1] = '\n';
+      charvalue[obj_size] = '\r';
+      charvalue[obj_size + 1] = '\n';
       //rocksdb::Slice keyslice(key, strlen(key));
-      //rocksdb::Slice valueslice(charvalue, objSize + 2);
+      //rocksdb::Slice valueslice(charvalue, obj_size + 2);
       KVRequest rqst;
       memset(&rqst, 0, sizeof(rqst));
       rqst.type = PUT;
       rqst.key = key;
       rqst.keylen = strlen(key);
       rqst.value = charvalue;
-      rqst.vlen = objSize + 2;
+      rqst.vlen = obj_size + 2;
 
       t1 = time_microsec();
-      //status = task->db->Put(task->writeOptions, keyslice, valueslice);
-      assert(task->dbIface->Put(&rqst) == true);
+      //status = task->db->Put(task->write_options, keyslice, valueslice);
+      assert(task->db_iface->Put(&rqst) == true);
       t2 = time_microsec();
-      task->writeLatency[i] = t2 - t1;
+      task->write_latency[i] = t2 - t1;
       //assert(status.ok());
       if ((i + 1) % 500000 == 0) {
         printf("task %d: write %d \n", task->id, i + 1);
       }
       // Throttle to target QPS.
-      unsigned long actualSpentTime = time_microsec() - tBeginUs;
-      unsigned long targetSpentTime =
-        (unsigned long)((i + 1.0) * 1000000 / task->writeTargetQPS);
-      if (actualSpentTime < targetSpentTime) {
-        usleep(targetSpentTime - actualSpentTime);
+      unsigned long actual_spent_time = time_microsec() - tBeginUs;
+      unsigned long target_spent_time =
+        (unsigned long)((i + 1.0) * 1000000 / task->write_target_qps);
+      if (actual_spent_time < target_spent_time) {
+        usleep(target_spent_time - actual_spent_time);
       }
     }
     tEndUs = time_microsec();
     printf("task %d finished write ...\n", task->id);
-    elapsedMicroSec = tEndUs - tBeginUs;
-    task->outputLock->lock();
-    cout << "thread " << task->id << " has written " << task->numWrites << " objs" << " in "
-         << elapsedMicroSec / 1000000.0 << " seconds, "
-         << "data = " << (objSize * task->numWrites / 1024.0 / 1024) << " MB, "
-         << "IOPS = " << task->numWrites * 1000000.0 / elapsedMicroSec << endl;
-    task->outputLock->unlock();
+    elapsed_usec = tEndUs - tBeginUs;
+    task->output_lock->lock();
+    cout << "thread " << task->id << " has written " << task->num_writes << " objs" << " in "
+         << elapsed_usec / 1000000.0 << " seconds, "
+         << "data = " << (obj_size * task->num_writes / 1024.0 / 1024) << " MB, "
+         << "IOPS = " << task->num_writes * 1000000.0 / elapsed_usec << endl;
+    task->output_lock->unlock();
 
     sem_post(&task->sem_end);
   }
 
   char keys[100][200];
 
-  if (task->doRead) {
+  if (task->do_read) {
     sem_wait(&task->sem_begin);
     int warmups = 100000;
     // Warm up read.
     printf("worker %d will do %d warm-up reads ...\n", task->id, warmups);
     for (int i = 0; i < warmups; i++) {
-      unsigned long objID = get_random(task->numWrites);
+      unsigned long objID = get_random(task->num_writes);
       sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
       KVRequest rqst;
       memset(&rqst, 0, sizeof(rqst));
       rqst.type = GET;
       rqst.key = key;
       rqst.keylen = strlen(key);
-      assert(task->dbIface->Get(&rqst) == true);
+      assert(task->db_iface->Get(&rqst) == true);
       if (rqst.retcode != SUCCESS) {
         printf("cannot find key %s\n", rqst.key);
       } else {
@@ -235,19 +237,19 @@ void Worker(WorkerTask *task) {
     sem_post(&task->sem_end);
   }
 
-  if (task->doRead) {
+  if (task->do_read) {
     sem_wait(&task->sem_begin);
-    printf("worker %d will do %d reads ...\n", task->id, task->numReads);
+    printf("worker %d will do %d reads ...\n", task->id, task->num_reads);
     tBeginUs = time_microsec();
-    for (int i = 0; i < task->numReads; i++) {
-      if (numKeysPerRead > 1) {
-        KVRequest rqsts[numKeysPerRead];
-        memset(rqsts, 0, sizeof(KVRequest) * numKeysPerRead);
+    for (int i = 0; i < task->num_reads; i++) {
+      if (num_keys_per_read > 1) {
+        KVRequest rqsts[num_keys_per_read];
+        memset(rqsts, 0, sizeof(KVRequest) * num_keys_per_read);
         //vector<rocksdb::Slice> keySlices;
         //vector<string> values;
         t1 = time_microsec();
-        for (int k = 0; k < numKeysPerRead; k++) {
-          unsigned long objID = get_random(task->numWrites);
+        for (int k = 0; k < num_keys_per_read; k++) {
+          unsigned long objID = get_random(task->num_writes);
           sprintf(keys[k], "task-%d-key-%d", task->id, (int)(objID));
           //keySlices.push_back(
           //  rocksdb::Slice(keys[k], strlen(keys[k])));
@@ -256,24 +258,24 @@ void Worker(WorkerTask *task) {
           rqsts[k].keylen = strlen(keys[k]);
           rqsts[k].reserved = NULL;
         }
-        //vector<rocksdb::Status> rets = task->db->MultiGet(task->readOptions,
+        //vector<rocksdb::Status> rets = task->db->MultiGet(task->read_options,
         //                                                  keySlices,
         //                                                  &values);
-        assert(task->dbIface->MultiGet(rqsts, numKeysPerRead));
+        assert(task->db_iface->MultiGet(rqsts, num_keys_per_read));
         t2 = time_microsec();
-        task->readLatency[i] = t2 - t1;
-        for (int k = 0; k < numKeysPerRead; k++) {
+        task->read_latency[i] = t2 - t1;
+        for (int k = 0; k < num_keys_per_read; k++) {
           //if (!rets[k].ok()) {
           //  printf("failed to get key %s: ret = %s\n", keys[k],
           //      rets[k].ToString().c_str());
           //  continue;
           //}
-          //assert(values[k].length() == objSize + 2);
+          //assert(values[k].length() == obj_size + 2);
           if (rqsts[k].retcode != SUCCESS) {
             printf("failed to get key %s\n", rqsts[k].key);
             continue;
           }
-          assert(rqsts[k].vlen == objSize + 2);
+          assert(rqsts[k].vlen == obj_size + 2);
           int tidAtKey, vidAtKey, tidAtValue, vidAtValue;
           sscanf(rqsts[k].key, "task-%d-key-%d", &tidAtKey, &vidAtKey);
           sscanf(rqsts[k].value, "valueof-task-%d-key-%d", &tidAtValue, &vidAtValue);
@@ -283,7 +285,7 @@ void Worker(WorkerTask *task) {
           free(rqsts[k].value);
         }
       } else {
-        unsigned long objID = get_random(task->numWrites);
+        unsigned long objID = get_random(task->num_writes);
         sprintf(key, "task-%d-key-%d", task->id, (int)(objID));
         KVRequest rqst;
         memset(&rqst, 0, sizeof(rqst));
@@ -294,16 +296,16 @@ void Worker(WorkerTask *task) {
 
         //string value;
         t1 = time_microsec();
-        //status = task->db->Get(task->readOptions, key, &value);
-        assert(task->dbIface->Get(&rqst) == true);
+        //status = task->db->Get(task->read_options, key, &value);
+        assert(task->db_iface->Get(&rqst) == true);
         t2 = time_microsec();
-        task->readLatency[i] = t2 - t1;
+        task->read_latency[i] = t2 - t1;
         //assert(status.ok());
-        //assert(value.length() == objSize || value.length() == objSize + 2);
+        //assert(value.length() == obj_size || value.length() == obj_size + 2);
         if (rqst.retcode != SUCCESS) {
           printf("failed to get key %s\n", rqst.key);
         } else {
-          assert(rqst.vlen == objSize || rqst.vlen == objSize + 2);
+          assert(rqst.vlen == obj_size || rqst.vlen == obj_size + 2);
           int rid, rval;
           //sscanf(value.c_str(), "task-%d-value-%d", &rid, &rval);
           sscanf(rqst.value, "valueof-task-%d-key-%d", &rid, &rval);
@@ -314,27 +316,27 @@ void Worker(WorkerTask *task) {
       }
       if ((i + 1) % 500000 == 0) {
         printf("task %d: read %d, see cache-table mem usage: %ld\n",
-               task->id, i + 1, GetMemoryUsage(task->dbIface));
+               task->id, i + 1, GetMemoryUsage(task->db_iface));
       }
       // Throttle to target QPS.
       unsigned long actualSpentTime = time_microsec() - tBeginUs;
       unsigned long targetSpentTime =
-        (unsigned long)((i + 1.0) * 1000000 / task->targetQPS);
+        (unsigned long)((i + 1.0) * 1000000 / task->target_qps);
       if (actualSpentTime < targetSpentTime) {
         usleep(targetSpentTime - actualSpentTime);
       }
     }
     tEndUs = time_microsec();
-    elapsedMicroSec = tEndUs - tBeginUs;
-    task->outputLock->lock();
+    elapsed_usec = tEndUs - tBeginUs;
+    task->output_lock->lock();
     cout << "thread " << task->id << " has read "
-         << task->numReads * numKeysPerRead << " objs in "
-         << elapsedMicroSec / 1000000.0 << " seconds, "
+         << task->num_reads * num_keys_per_read << " objs in "
+         << elapsed_usec / 1000000.0 << " seconds, "
          << "data = "
-         << (objSize * task->numReads * numKeysPerRead / 1024.0 / 1024)
+         << (obj_size * task->num_reads * num_keys_per_read / 1024.0 / 1024)
          << " MB, "
-         << "IOPS = " << task->numReads * 1000000.0 / elapsedMicroSec << endl;
-    task->outputLock->unlock();
+         << "IOPS = " << task->num_reads * 1000000.0 / elapsed_usec << endl;
+    task->output_lock->unlock();
     sem_post(&task->sem_end);
   }
 
@@ -369,9 +371,9 @@ void TryKVInterface(string &dbpath, int numThreads, int cacheMB) {
   CloseDB(hdl);
 }
 
-void TryRocksDB(string &dbpath, int numThreads, int cacheMB) {
+void TryRocksDB(string &dbpath, int num_threads, int cache_mb) {
   RocksDBInterface rdb;
-  assert(rdb.OpenDB(dbpath.c_str(), numThreads, cacheMB) == true);
+  assert(rdb.OpenDB(dbpath.c_str(), num_threads, cache_mb) == true);
 
   char key[128];
   char charvalue[1024];
@@ -421,7 +423,7 @@ void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
   printf("-p <dbpath>          : rocksdb paths separated by ','. Must provide.\n");
-  printf("-w                   : re-write entire DB before test. Def to not\n");
+  printf("-w                   : overwrite entire DB before test. Def to not\n");
   printf("-r                   : perform read benchmark after writing. Def to not\n");
   printf("-s <obj size>        : object size in bytes. Def = 1000\n");
   printf("-S <shards>          : number of shards. Def = 8\n");
@@ -441,17 +443,17 @@ void help() {
 }
 
 void Write(string key, RocksDBInterface *dbIface) {
-  char buf[objSize + 1];
-  arc4random_buf(buf, objSize);
+  char buf[obj_size + 1];
+  arc4random_buf(buf, obj_size);
   sprintf(buf, "%s", key.c_str());
   buf[strlen(buf)] = ' ';
-  buf[objSize] = 0;
+  buf[obj_size] = 0;
   KVRequest rqst;
   memset(&rqst, 0, sizeof(rqst));
   rqst.key = key.data();
   rqst.keylen = key.size();
   rqst.value = buf;
-  rqst.vlen = objSize;
+  rqst.vlen = obj_size;
 
   assert(dbIface->Put(&rqst) == true);
   printf("write key: %s, vlen = %ld, value = %s\n",
@@ -489,73 +491,73 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  vector<char*> dbPaths;
-  bool singleRead = false, singleWrite = false;
-  string singleReadKey, singleWriteKey;
+  vector<char*> db_paths;
+  bool single_read = false, single_write = false;
+  string single_read_key, single_write_key;
 
-  while ((c = getopt(argc, argv, "e:p:wrhs:n:t:c:q:k:o:S:x:y:")) != EOF) {
+  while ((c = getopt(argc, argv, "e:p:orhs:n:t:c:q:k:o:S:x:y:")) != EOF) {
     switch(c) {
       case 'h':
         help();
         return 0;
       case 'p':
-        dbPath = optarg;
-        dbPaths = SplitString(optarg, ",");
+        db_path = optarg;
+        db_paths = SplitString(optarg, ",");
         printf("db path : %s\n", optarg);
         break;
       case 'w':
-        doWrite = true;
+        do_write = true;
         printf("will re-write all before test.\n");
         break;
       case 'x':
-        singleWrite = true;
-        singleWriteKey = optarg;
+        single_write = true;
+        single_write_key = optarg;
         printf("will single write key %s\n", optarg);
         break;
       case 'y':
-        singleRead = true;
-        singleReadKey = optarg;
+        single_read = true;
+        single_read_key = optarg;
         printf("will single read key %s\n", optarg);
         break;
       case 'r':
-        doRead = true;
+        do_read = true;
         printf("will run read test.\n");
         break;
       case 's':
-        objSize = atoi(optarg);
-        printf("object size = %d\n", objSize);
+        obj_size = atoi(optarg);
+        printf("object size = %d\n", obj_size);
         break;
       case 'S':
-        numShards = atoi(optarg);
-        printf("num of shards = %d\n", numShards);
+        num_shards = atoi(optarg);
+        printf("num of shards = %d\n", num_shards);
         break;
       case 'o':
-        numOps = atol(optarg);
-        printf("total number of reads to perform = %d\n", numOps);
+        num_ops = atol(optarg);
+        printf("total number of reads to perform = %d\n", num_ops);
         break;
       case 'n':
-        numObjs = atol(optarg);
-        printf("total number of objects = %d\n", numObjs);
+        num_objs = atol(optarg);
+        printf("total number of objects = %d\n", num_objs);
         break;
       case 't':
-        numThreads = atoi(optarg);
-        printf("will use %d threads\n", numThreads);
+        num_threads = atoi(optarg);
+        printf("will use %d threads\n", num_threads);
         break;
       case 'c':
-        dbCacheMB = atoi(optarg);
-        printf("will use %d MB DB block cache\n", dbCacheMB);
+        db_cache_mb = atoi(optarg);
+        printf("will use %d MB DB block cache\n", db_cache_mb);
         break;
       case 'q':
-        totalTargetQPS = atol(optarg);
-        printf("total read target QPS = %d\n", totalTargetQPS);
+        total_target_qps = atol(optarg);
+        printf("total read target QPS = %d\n", total_target_qps);
         break;
       case 'e':
-        totalWriteTargetQPS = atol(optarg);
-        printf("total write target QPS = %d\n", totalWriteTargetQPS);
+        total_write_target_qps = atol(optarg);
+        printf("total write target QPS = %d\n", total_write_target_qps);
         break;
       case 'k':
-        numKeysPerRead = atoi(optarg);
-        printf("Multi-get size = %d\n", numKeysPerRead);
+        num_keys_per_read = atoi(optarg);
+        printf("Multi-get size = %d\n", num_keys_per_read);
         break;
       case '?':
         help();
@@ -570,118 +572,118 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  int numTasks = numThreads;
+  int num_tasks = num_threads;
 
   //TryThreadPool();
   //TryRocksDB(kDBPath, numTasks, cacheMB);
   //TryKVInterface(kDBPath, numTasks, cacheMB);
   //return 0;
 
-  std::thread  *workers = new std::thread[numTasks];
+  std::thread  *workers = new std::thread[num_tasks];
   mutex outputLock;
 
-  cout << "will run " << numTasks << " benchmark threads on DB " << dbPath << endl;
+  cout << "will run " << num_tasks << " benchmark threads on DB " << db_path << endl;
 
   RocksDBInterface iface;
   rocksdb::DB* db = NULL;
   rocksdb::Status s;
   // Prepare general DB options.
   rocksdb::Options options;
-  //TuneUniversalStyleCompaction(&options, dbCacheMB);
-  //TuneLevelStyleCompaction(&options, dbCacheMB);
+  //TuneUniversalStyleCompaction(&options, db_cache_mb);
+  //TuneLevelStyleCompaction(&options, db_cache_mb);
 
 #if 0
   // Open normal DB
-  s = rocksdb::DB::Open(options, dbPath, &db);
+  s = rocksdb::DB::Open(options, db_path, &db);
   assert(s.ok());
 #else
   // Open DB interface with sharding.
-  int iothreads = numShards;
-  //assert(iface.Open(dbPath.c_str(), numShards, iothreads, dbCacheMB));
-  assert(iface.Open((const char**)&dbPaths[0], dbPaths.size(), numShards, iothreads, dbCacheMB));
+  int iothreads = num_shards;
+  //assert(iface.Open(db_path.c_str(), num_shards, iothreads, db_cache_mb));
+  assert(iface.Open((const char**)&db_paths[0], db_paths.size(), num_shards, iothreads, db_cache_mb));
 #endif
 
-  if (singleWrite) {
-    Write(singleWriteKey, &iface);
+  if (single_write) {
+    Write(single_write_key, &iface);
   }
-  if (singleRead) {
-    Read(singleReadKey, &iface);
+  if (single_read) {
+    Read(single_read_key, &iface);
   }
-  if (singleWrite || singleRead) {
+  if (single_write || single_read) {
     return 0;
   }
 
   struct timespec tbegin, tend;
   struct timespec objBegin, objEnd;
-  long elapsedMicroSec = 0;
-  long elapsedMilliSec = 0;
+  long elapsed_usec = 0;
+  long elapsed_msec = 0;
 
   // Init random number.
   clock_gettime(CLOCK_MONOTONIC, &tbegin);
   std::srand(tbegin.tv_nsec);
 
   // seq write objs.
-  //int numObjs = 1000 * 1000 * 60;
-  long writeObjCount = numObjs;
-  long readObjCount = numOps;
+  //int num_objs = 1000 * 1000 * 60;
+  long write_obj_count = num_objs;
+  long read_obj_count = num_ops;
 
-  int *writeLatency = NULL;
-  int *readLatency = NULL;
-  if (doWrite) {
-    writeLatency = new int[writeObjCount];
-    memset(writeLatency, 0, writeObjCount * sizeof(int));
+  int *write_latency = NULL;
+  int *read_latency = NULL;
+  if (do_write) {
+    write_latency = new int[write_obj_count];
+    memset(write_latency, 0, write_obj_count * sizeof(int));
   }
-  if (doRead) {
-    readLatency = new int[readObjCount];
-    memset(readLatency, 0, readObjCount * sizeof(int));
+  if (do_read) {
+    read_latency = new int[read_obj_count];
+    memset(read_latency, 0, read_obj_count * sizeof(int));
   }
 
-  int perTaskWrite = writeObjCount / numTasks;
-  int perTaskRead = readObjCount / numTasks;
-  WorkerTask *tasks = new WorkerTask[numTasks];
+  int per_task_write = write_obj_count / num_tasks;
+  int per_task_read = read_obj_count / num_tasks;
+  WorkerTask *tasks = new WorkerTask[num_tasks];
 
-  for (int i = 0; i < numTasks; i++) {
+  for (int i = 0; i < num_tasks; i++) {
     tasks[i].id = i;
-    tasks[i].doRead = doRead;
-    tasks[i].doWrite = doWrite;
-    tasks[i].numWrites = perTaskWrite;
-    tasks[i].numReads = perTaskRead;
-    tasks[i].writeLatency = writeLatency + perTaskWrite * i;
-    tasks[i].readLatency = readLatency + perTaskRead * i;
-    tasks[i].targetQPS = totalTargetQPS / numTasks;
-    tasks[i].writeTargetQPS = totalWriteTargetQPS / numTasks;
+    tasks[i].do_read = do_read;
+    tasks[i].do_write = do_write;
+    tasks[i].num_writes = per_task_write;
+    tasks[i].num_reads = per_task_read;
+    tasks[i].write_latency = write_latency + per_task_write * i;
+    tasks[i].read_latency = read_latency + per_task_read * i;
+    tasks[i].target_qps = total_target_qps / num_tasks;
+    tasks[i].write_target_qps = total_write_target_qps / num_tasks;
 
     sem_init(&tasks[i].sem_begin, 0, 0);
     sem_init(&tasks[i].sem_end, 0, 0);
 
     //tasks[i].db = db;
-    tasks[i].dbIface = &iface;
-    //tasks[i].writeOptions = writeOptions;
-    //tasks[i].readOptions = readOptions;
+    tasks[i].db_iface = &iface;
+    //tasks[i].write_options = write_options;
+    //tasks[i].read_options = read_options;
 
-    tasks[i].outputLock = &outputLock;
+    tasks[i].output_lock = &outputLock;
 
     workers[i] = std::thread(Worker, tasks + i);
   }
 
-  unsigned long t1, t2, timeTotal;
-  if (doWrite) {
+  unsigned long t1, t2, time_total;
+  if (do_write) {
     printf("Main: will start write phase...\n");
     t1 = time_microsec();
     // start worker to write.
-    for (int i = 0; i < numTasks; i++) {
+    for (int i = 0; i < num_tasks; i++) {
       sem_post(&tasks[i].sem_begin);
     }
     // wait for write to finish.
-    for (int i = 0; i < numTasks; i++) {
+    for (int i = 0; i < num_tasks; i++) {
       sem_wait(&tasks[i].sem_end);
     }
-    timeTotal = time_microsec() - t1;
+    time_total = time_microsec() - t1;
 
     // output stats
-    sort(writeLatency, writeLatency + writeObjCount);
-    printf("Overall write IOPS = %f\n", writeObjCount / (timeTotal / 1000000.0));
-    PrintStats(writeLatency, writeObjCount, "\nOverall write latency in ms");
+    sort(write_latency, write_latency + write_obj_count);
+    printf("Overall write IOPS = %f\n", write_obj_count / (time_total / 1000000.0));
+    PrintStats(write_latency, write_obj_count, "\nOverall write latency in ms");
     printf("\nwait for background activities to settle...\n");
     sleep(3);
     printf("\ntable-cache memory usage after write: %ld\n",
@@ -689,14 +691,14 @@ int main(int argc, char** argv) {
   }
 
   // start worker to read.
-  if (doRead) {
+  if (do_read) {
     // Warm up phase.
     printf("\n\nMain: warm up read...\n");
-    for (int i = 0; i < numTasks; i++) {
+    for (int i = 0; i < num_tasks; i++) {
       sem_post(&tasks[i].sem_begin);
     }
     // wait for read to finish.
-    for (int i = 0; i < numTasks; i++) {
+    for (int i = 0; i < num_tasks; i++) {
       sem_wait(&tasks[i].sem_end);
     }
 
@@ -706,33 +708,35 @@ int main(int argc, char** argv) {
     printf("\n\nMain: will start read phase...\n");
 
     t1 = time_microsec();
-    for (int i = 0; i < numTasks; i++) {
+    for (int i = 0; i < num_tasks; i++) {
       sem_post(&tasks[i].sem_begin);
     }
     // wait for read to finish.
-    for (int i = 0; i < numTasks; i++) {
+    for (int i = 0; i < num_tasks; i++) {
       sem_wait(&tasks[i].sem_end);
     }
-    timeTotal = time_microsec() - t1;
+    time_total = time_microsec() - t1;
     printf("\ntable-cache memory usage after read: %ld\n",
            GetMemoryUsage(&iface));
   }
 
-  for (int i = 0; i < numTasks; i++) {
+  for (int i = 0; i < num_tasks; i++) {
     if (workers[i].joinable()) {
       workers[i].join();
       printf("joined thread %d\n", i);
     }
   }
   // output stats
-  if (doRead) {
-    sort(readLatency, readLatency + readObjCount);
-    printf("Overall read IOPS = %f\n", readObjCount / (timeTotal / 1000000.0));
-    PrintStats(readLatency, readObjCount, "\nOverall read latency in ms");
+  if (do_read) {
+    sort(read_latency, read_latency + read_obj_count);
+    printf("Overall read IOPS = %f\n", read_obj_count / (time_total / 1000000.0));
+    PrintStats(read_latency, read_obj_count, "\nOverall read latency in ms");
   }
 
   delete [] workers;
-  delete [] readLatency;
-  delete [] writeLatency;
+  delete [] read_latency;
+  delete [] write_latency;
   return 0;
 }
+
+}  // namespace

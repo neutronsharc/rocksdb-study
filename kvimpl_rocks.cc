@@ -36,11 +36,11 @@ bool RocksDBShard::OpenDB(const string& dbPath,
     TuneUniversalStyleCompaction(&options_, blockCacheMB);
   }
 
-  writeOptions_.disableWAL = true;
+  write_options_.disableWAL = true;
 
   // save index/filter/data blocks in block cache.
-  readOptions_.fill_cache = true;
-  readOptions_.verify_checksums = true;
+  read_options_.fill_cache = true;
+  read_options_.verify_checksums = true;
 
   rocksdb::Status s = rocksdb::DB::Open(options_, dbPath, &db_);
   if (!s.ok()) {
@@ -56,7 +56,7 @@ bool RocksDBShard::OpenDB(const string& dbPath,
 bool RocksDBShard::Get(KVRequest*  p)  {
   string value;
   rocksdb::Slice key(p->key, p->keylen);
-  rocksdb::Status status = db_->Get(readOptions_, key, &value);
+  rocksdb::Status status = db_->Get(read_options_, key, &value);
   if (status.ok()) {
     p->vlen = value.length();
     p->value = (char*)malloc(p->vlen);
@@ -84,7 +84,7 @@ bool RocksDBShard::Get(KVRequest*  p)  {
 bool RocksDBShard::Put(KVRequest*  p)  {
   rocksdb::Slice key(p->key, p->keylen);
   rocksdb::Slice value(p->value, p->vlen);
-  rocksdb::Status status = db_->Put(writeOptions_, key, value);
+  rocksdb::Status status = db_->Put(write_options_, key, value);
   dbg("key %s: put value %s\n", p->key, p->value);
   if (status.ok()) {
     p->retcode = SUCCESS;
@@ -100,7 +100,7 @@ bool RocksDBShard::Put(KVRequest*  p)  {
 
 bool RocksDBShard::Delete(KVRequest*  p) {
   rocksdb::Slice key(p->key, p->keylen);
-  rocksdb::Status status = db_->Delete(writeOptions_, key);
+  rocksdb::Status status = db_->Delete(write_options_, key);
   dbg("delete key %s: ret = %s\n", p->key, status.ToString().c_str());
   if (status.ok()) {
   } else {
@@ -125,7 +125,7 @@ bool RocksDBShard::MultiGet(vector<KVRequest*> &requests) {
     keySlices.push_back(rocksdb::Slice(p->key, p->keylen));
   }
 
-  vector<rocksdb::Status> rets = db_->MultiGet(readOptions_, keySlices, &values);
+  vector<rocksdb::Status> rets = db_->MultiGet(read_options_, keySlices, &values);
   for (int i = 0; i < numRequests; i++) {
     KVRequest *p = requests.at(i);
     if (rets[i].ok()) {
@@ -256,15 +256,15 @@ bool RocksDBInterface::Open(const char* dbPaths[],
   int perShardCacheMB = blockCacheMB / numShards;
 
   // Open the thread pool.
-  numIOThreads_ = numIOThreads;
-  threadPool_.reset(new ThreadPool(numIOThreads, this));
-  threadPool_->SetKVStore(this);
+  num_io_threads_ = numIOThreads;
+  thread_pool_.reset(new ThreadPool(numIOThreads, this));
+  thread_pool_->SetKVStore(this);
   printf("created IO pool with %d threads\n", numIOThreads);
 
   // Open DB shards.
   printf("Will open DB at %d locations\n", numPaths);
   for (int i = 0; i < numPaths; i++) {
-    dbPaths_.push_back(dbPaths[i]);
+    db_paths_.push_back(dbPaths[i]);
     printf("\t%s\n", dbPaths[i]);
   }
 
@@ -272,12 +272,12 @@ bool RocksDBInterface::Open(const char* dbPaths[],
     RocksDBShard* shard = new RocksDBShard();
     assert(shard != NULL);
 
-    string shardPath = dbPaths_[i % numPaths] + string("/shard-") + std::to_string(i);
+    string shardPath = db_paths_[i % numPaths] + string("/shard-") + std::to_string(i);
     assert(shard->OpenDB(shardPath, perShardCacheMB, cstyle, env));
 
-    dbShards_.push_back(shard);
+    db_shards_.push_back(shard);
   }
-  numberOfShards_ = dbShards_.size();
+  num_shards_ = db_shards_.size();
   return true;
 }
 
@@ -289,11 +289,11 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   return false;
 
   TuneUniversalStyleCompaction(&options_, blockCacheMB);
-  writeOptions_.disableWAL = true;
+  write_options_.disableWAL = true;
 
   // save index/filter/data blocks in block cache.
-  readOptions_.fill_cache = true;
-  readOptions_.verify_checksums = true;
+  read_options_.fill_cache = true;
+  read_options_.verify_checksums = true;
 
   rocksdb::Status s = rocksdb::DB::Open(options_, dbPath, &db_);
   assert(s.ok());
@@ -302,10 +302,10 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   //dbPath_ = dbPath;
 
   // Open the thread pool.
-  numIOThreads_ = numIOThreads;
-  threadPool_.reset(new ThreadPool(numIOThreads, this));
-  //threadPool_->SetDataProcessor(ProcessOneRequest);
-  threadPool_->SetKVStore(this);
+  num_io_threads_ = numIOThreads;
+  thread_pool_.reset(new ThreadPool(numIOThreads, this));
+  //thread_pool_->SetDataProcessor(ProcessOneRequest);
+  thread_pool_->SetKVStore(this);
   printf("Have created IO thread pool of %d threads\n", numIOThreads);
 
   return true;
@@ -313,7 +313,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
 
 // Post a request to worker thread pool.
 void RocksDBInterface::PostRequest(QueuedTask* p) {
-  threadPool_->AddWork((void*)p);
+  thread_pool_->AddWork((void*)p);
 }
 
 // Process the given request in sync way.
@@ -323,7 +323,7 @@ bool RocksDBInterface::ProcessRequest(void* p) {
   if (task->type == MULTI_GET) {
     PerShardMultiGet* mget = task->task.mget;
     int shardID = mget->shardID;
-    return dbShards_[shardID]->MultiGet(mget->requests);
+    return db_shards_[shardID]->MultiGet(mget->requests);
   }
 
   // Single request,
@@ -362,11 +362,11 @@ bool RocksDBInterface::ProcessRequest(void* p) {
 
 bool RocksDBInterface::Get(KVRequest*  p)  {
   uint32_t hv = bobhash(p->key, p->keylen, 0);
-  RocksDBShard* db = dbShards_[hv % numberOfShards_];
+  RocksDBShard* db = db_shards_[hv % num_shards_];
   return db->Get(p);
 
   string value;
-  rocksdb::Status status = db_->Get(readOptions_, p->key, &value);
+  rocksdb::Status status = db_->Get(read_options_, p->key, &value);
   if (status.ok()) {
     p->vlen = value.length();
     p->value = (char*)malloc(p->vlen);
@@ -393,12 +393,12 @@ bool RocksDBInterface::Get(KVRequest*  p)  {
 
 bool RocksDBInterface::Put(KVRequest*  p)  {
   uint32_t hv = bobhash(p->key, p->keylen, 0);
-  RocksDBShard* db = dbShards_[hv % numberOfShards_];
+  RocksDBShard* db = db_shards_[hv % num_shards_];
   return db->Put(p);
 
   rocksdb::Slice key(p->key, p->keylen);
   rocksdb::Slice value(p->value, p->vlen);
-  rocksdb::Status status = db_->Put(writeOptions_, key, value);
+  rocksdb::Status status = db_->Put(write_options_, key, value);
   dbg("key %s: put value %s\n", p->key, p->value);
   if (status.ok()) {
     p->retcode = SUCCESS;
@@ -414,10 +414,10 @@ bool RocksDBInterface::Put(KVRequest*  p)  {
 
 bool RocksDBInterface::Delete(KVRequest*  p) {
   uint32_t hv = bobhash(p->key, p->keylen, 0);
-  RocksDBShard* db = dbShards_[hv % numberOfShards_];
+  RocksDBShard* db = db_shards_[hv % num_shards_];
   return db->Delete(p);
 
-  rocksdb::Status status = db_->Delete(writeOptions_, p->key);
+  rocksdb::Status status = db_->Delete(write_options_, p->key);
   dbg("delete key %s: ret = %s\n", p->key, status.ToString().c_str());
   if (status.ok()) {
   } else {
@@ -434,7 +434,7 @@ bool RocksDBInterface::Delete(KVRequest*  p) {
 // Multi-get. The individual get rqsts will be distributed to all shards
 // within this DB interface.
 bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
-  PerShardMultiGet perShardRqsts[numberOfShards_];
+  PerShardMultiGet perShardRqsts[num_shards_];
 
   int shardsUsed = 0;
   int lastShardUsed = -1;
@@ -444,7 +444,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
     KVRequest* p = requests + i;
     p->reserved = NULL;
     uint32_t hv = bobhash(p->key, p->keylen, 0);
-    int shardId = hv % numberOfShards_;
+    int shardId = hv % num_shards_;
     if (perShardRqsts[shardId].requests.size() == 0) {
       shardsUsed++;
       lastShardUsed = shardId;;
@@ -455,7 +455,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
 
   // If only one shard is used.
   if (shardsUsed == 1) {
-    return dbShards_[lastShardUsed]->MultiGet(
+    return db_shards_[lastShardUsed]->MultiGet(
                 perShardRqsts[lastShardUsed].requests);
   }
 
@@ -467,7 +467,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
   }
   QueuedTask tasks[shardsUsed];
   int postedShards = 0;
-  for (int i = 0; i < numberOfShards_; i++) {
+  for (int i = 0; i < num_shards_; i++) {
     if (perShardRqsts[i].requests.size() == 0) {
       continue;
     }
@@ -494,7 +494,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
     keySlices.push_back(rocksdb::Slice(p->key, p->keylen));
   }
 
-  vector<rocksdb::Status> rets = db_->MultiGet(readOptions_, keySlices, &values);
+  vector<rocksdb::Status> rets = db_->MultiGet(read_options_, keySlices, &values);
   for (int i = 0; i < numRequests; i++) {
     KVRequest *p = requests + i;
     if (rets[i].ok()) {
@@ -520,8 +520,8 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
 
 bool RocksDBInterface::GetNumberOfRecords(KVRequest* request) {
   uint64_t num = 0;
-  for (int i = 0; i < dbShards_.size(); i++) {
-    num += dbShards_[i]->GetNumberOfRecords();
+  for (int i = 0; i < db_shards_.size(); i++) {
+    num += db_shards_[i]->GetNumberOfRecords();
   }
   request->vlen = num;
   return true;
@@ -529,8 +529,8 @@ bool RocksDBInterface::GetNumberOfRecords(KVRequest* request) {
 
 bool RocksDBInterface::GetDataSize(KVRequest* request) {
   uint64_t num = 0;
-  for (int i = 0; i < dbShards_.size(); i++) {
-    num += dbShards_[i]->GetDataSize();
+  for (int i = 0; i < db_shards_.size(); i++) {
+    num += db_shards_[i]->GetDataSize();
   }
   request->vlen = num;
   return true;
@@ -538,8 +538,8 @@ bool RocksDBInterface::GetDataSize(KVRequest* request) {
 
 bool RocksDBInterface::GetMemoryUsage(KVRequest* request) {
   uint64_t num = 0;
-  for (int i = 0; i < dbShards_.size(); i++) {
-    num += dbShards_[i]->GetMemoryUsage();
+  for (int i = 0; i < db_shards_.size(); i++) {
+    num += db_shards_[i]->GetMemoryUsage();
   }
   request->vlen = num;
   return true;

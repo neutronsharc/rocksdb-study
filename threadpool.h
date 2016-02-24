@@ -28,14 +28,16 @@ class KVStore;
 typedef void (*DataProcessor)(void*);
 
 // Base class for Tasks
-// run() should be overloaded and expensive calculations done there.
-// showTask() is for debugging and can be deleted if not used
 class Task {
  public:
   Task() {}
   virtual ~Task() {}
+
+  // run() should be overloaded and expensive calculations done there.
   virtual void run()=0;
-  virtual void showTask()=0;
+
+  // show_task() is for debugging and can be deleted if not used
+  virtual void show_task()=0;
 };
 
 
@@ -67,7 +69,7 @@ class WorkQueue {
   // Return:
   //   the next task,
   //   or NULL only if the queue is torn down, and no more data avail.
-  void* GetNext() {
+  void* GetWork() {
     void *data = NULL;
 
     pthread_mutex_lock(&mutex_);
@@ -86,8 +88,8 @@ class WorkQueue {
     return data;
   }
 
-  // Mark the queue finished
-  void Finish() {
+  // Close the queue, and abandon any unfinished tasks.
+  void Close() {
     pthread_mutex_lock(&mutex_);
     finished_ = true;
     // Signal all waiting threads.
@@ -95,7 +97,7 @@ class WorkQueue {
     pthread_mutex_unlock(&mutex_);
   }
 
-  bool HasWork() {
+  bool HasMoreWork() {
     return (tasks_.size() > 0);
   }
 
@@ -111,7 +113,7 @@ static void GetWork(void *p, int id, KVStore* kvstore) {
   WorkQueue *wq = (WorkQueue*)p;
   printf("KV store worker thread %d started, kvstore = %p...\n",
          id, kvstore);
-  while (data = wq->GetNext()) {
+  while (data = wq->GetWork()) {
     if (kvstore) {
       kvstore->ProcessRequest(data);
     }
@@ -122,17 +124,17 @@ static void GetWork(void *p, int id, KVStore* kvstore) {
 
 class ThreadPool {
  public:
-  ThreadPool(int n, KVStore* kvstore) : numberThreads_(n), kvstore_(kvstore) {
+  ThreadPool(int n, KVStore* kvstore) : number_threads_(n), kvstore_(kvstore) {
     threads_ = new std::thread[n];
     printf("Start KV store thread pool with %d threads\n", n);
     for (int i = 0; i < n; i++) {
-      threads_[i] = std::thread(GetWork, &workQueue_, i, kvstore);
+      threads_[i] = std::thread(GetWork, &work_queue_, i, kvstore);
     }
   }
 
   ~ThreadPool() {
-    workQueue_.Finish();
-    for (int i = 0; i < numberThreads_; i++) {
+    work_queue_.Close();
+    for (int i = 0; i < number_threads_; i++) {
       if (threads_[i].joinable()) {
         threads_[i].join();
       }
@@ -142,17 +144,17 @@ class ThreadPool {
 
 
   void AddWork(void *data) {
-    workQueue_.AddWork(data);
+    work_queue_.AddWork(data);
   }
 
   // Tell the tasks to finish and return
   void Finish() {
-    workQueue_.Finish();
+    work_queue_.Close();
   }
 
   // Checks if there is work to do
   bool HasWork() {
-    return workQueue_.HasWork();
+    return work_queue_.HasMoreWork();
   }
 
   void SetKVStore(KVStore* kvstore) {
@@ -161,8 +163,8 @@ class ThreadPool {
 
  private:
   std::thread *threads_;
-  int numberThreads_;
-  WorkQueue workQueue_;
+  int number_threads_;
+  WorkQueue work_queue_;
   // TODO: define a function to process each piece of data.
   KVStore *kvstore_;
 

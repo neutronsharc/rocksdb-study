@@ -9,8 +9,8 @@
 
 class MultiCompletion {
  public:
-  MultiCompletion(int numTodo) {
-    todo_ = numTodo;;
+  MultiCompletion(int todo) {
+    todo_ = todo;;
     finished_ = 0;
     pthread_mutex_init(&mutex_, 0);
     pthread_cond_init(&cond_, 0);

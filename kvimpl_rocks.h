@@ -88,8 +88,8 @@ class RocksDBShard {
   string dbPath_;
   rocksdb::DB* db_;
   rocksdb::Options options_;
-  rocksdb::WriteOptions writeOptions_;
-  rocksdb::ReadOptions readOptions_;
+  rocksdb::WriteOptions write_options_;
+  rocksdb::ReadOptions read_options_;
 };
 
 class RocksDBInterface : public KVStore {
@@ -98,14 +98,14 @@ class RocksDBInterface : public KVStore {
 
   // To close a RocksDB interface, just delete the db obj.
   ~RocksDBInterface() {
-    for (RocksDBShard* shard : dbShards_) {
+    for (RocksDBShard* shard : db_shards_) {
       printf("close DB %s\n", shard->dbPath_.c_str());
       delete shard;
     }
     if (db_) {
       printf("close DB at: ");
-      for (int i = 0; i < dbPaths_.size(); i++) {
-        printf("%s ", dbPaths_[i].c_str());
+      for (int i = 0; i < db_paths_.size(); i++) {
+        printf("%s ", db_paths_[i].c_str());
       }
       printf("\n");
       delete db_;
@@ -157,18 +157,18 @@ class RocksDBInterface : public KVStore {
 
   bool GetMemoryUsage(KVRequest* p);
 
-  vector<string> dbPaths_;
+  vector<string> db_paths_;
   rocksdb::DB *db_;
   rocksdb::Options options_;
-  rocksdb::WriteOptions writeOptions_;
-  rocksdb::ReadOptions readOptions_;
+  rocksdb::WriteOptions write_options_;
+  rocksdb::ReadOptions read_options_;
 
-  int numIOThreads_;
-  unique_ptr<ThreadPool> threadPool_;
+  int num_io_threads_;
+  unique_ptr<ThreadPool> thread_pool_;
 
   // DB shards. Shards of the same DB are in dir "/DB path/<shard-x>/"
-  int numberOfShards_;
-  vector<RocksDBShard*> dbShards_;
+  int num_shards_;
+  vector<RocksDBShard*> db_shards_;
 };
 
 
