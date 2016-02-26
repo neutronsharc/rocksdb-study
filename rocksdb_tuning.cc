@@ -97,14 +97,14 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
   //   def to 512 MB memtable
   options->OptimizeLevelStyleCompaction();
 
-  options->OptimizeForPointLookup(blkCacheMB);
+  //options->OptimizeForPointLookup(blkCacheMB);
   // Fine tune some parameters for point query.
-  TunePointLookup(options, blkCacheMB);
+  //TunePointLookup(options, blkCacheMB);
 
   // create the DB if it's not already present
   options->create_if_missing = true;
 
-  options->max_open_files = 2000;
+  options->max_open_files = 5000;
   options->allow_os_buffer = true;
   options->write_buffer_size = write_buffer_size;
   options->max_write_buffer_number = max_write_buffer_number;
@@ -117,4 +117,8 @@ void TuneLevelStyleCompaction(rocksdb::Options *options, int blkCacheMB) {
 
   options->max_background_compactions = 8;
   options->max_background_flushes = 1;
+}
+
+void PrepareBulkLoadOptions(rocksdb::Options& options) {
+  options.PrepareForBulkLoad();
 }

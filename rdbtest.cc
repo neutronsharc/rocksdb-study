@@ -26,11 +26,11 @@
 #include "threadpool.h"
 #include "kvinterface.h"
 #include "kvimpl_rocks.h"
-#include "rocksdb_tuning.h"
 #include "utils.h"
 #include "hdr_histogram.h"
 
 using namespace std;
+
 using namespace std::chrono;
 
 
@@ -70,7 +70,7 @@ struct TaskContext {
   rocksdb::WriteOptions write_options;
   rocksdb::ReadOptions read_options;
 
-  RocksDBInterface* db_iface;
+  RocksDBEngine* db_iface;
 
   // A lock to sync output.
   mutex *output_lock;
@@ -173,7 +173,7 @@ void TimerCallback(union sigval sv) {
 
 vector<rocksdb::ColumnFamilyHandle*> family_handles;
 
-uint64_t GetMemoryUsage(RocksDBInterface *dbIface);
+uint64_t GetMemoryUsage(RocksDBEngine *dbIface);
 
 unsigned long time_microsec() {
   struct timespec t;
@@ -282,7 +282,7 @@ void TryKVInterface(string &dbpath, int numThreads, int cacheMB) {
 }
 
 void TryRocksDB(string &dbpath, int num_threads, int cache_mb) {
-  RocksDBInterface rdb;
+  RocksDBEngine rdb;
   assert(rdb.OpenDB(dbpath.c_str(), num_threads, cache_mb) == true);
 
   char key[128];
@@ -330,7 +330,7 @@ void TryThreadPool() {
 }
 
 
-void Write(string key, RocksDBInterface *dbIface) {
+void Write(string key, RocksDBEngine *dbIface) {
   int obj_size = 4000;
 
   char buf[obj_size + 1];
@@ -346,11 +346,11 @@ void Write(string key, RocksDBInterface *dbIface) {
   rqst.vlen = obj_size;
 
   assert(dbIface->Put(&rqst) == true);
-  printf("write key: %s, vlen = %ld, value = %s\n",
+  printf("write key: %s, vlen = %d, value = %s\n",
          rqst.key, rqst.vlen, rqst.value);
 }
 
-void Read(string key, RocksDBInterface *dbIface) {
+void Read(string key, RocksDBEngine *dbIface) {
   KVRequest rqst;
   memset(&rqst, 0, sizeof(rqst));
   rqst.key = key.data();
@@ -360,13 +360,13 @@ void Read(string key, RocksDBInterface *dbIface) {
   if (rqst.retcode != SUCCESS) {
     printf("cannot find key %s\n", rqst.key);
   } else {
-    printf("key: %s, vlen=%ld, value: %s\n",
+    printf("key: %s, vlen=%d, value: %s\n",
            rqst.key, rqst.vlen, rqst.value);
     free(rqst.value);
   }
 }
 
-uint64_t GetMemoryUsage(RocksDBInterface *dbIface) {
+uint64_t GetMemoryUsage(RocksDBEngine *dbIface) {
   KVRequest rqst;
   memset(&rqst, 0, sizeof(rqst));
   rqst.type = GET_MEMORY_USAGE;
@@ -496,37 +496,32 @@ int main(int argc, char** argv) {
 
   cout << "will run " << num_threads << " benchmark threads on DB " << db_path << endl;
 
-/*
-  RocksDBInterface iface;
-  rocksdb::DB* db = NULL;
-  rocksdb::Status s;
-  // Prepare general DB options.
-  rocksdb::Options options;
-  //TuneUniversalStyleCompaction(&options, db_cache_mb);
-  //TuneLevelStyleCompaction(&options, db_cache_mb);
+  RocksDBShard shard;
 
-#if 0
-  // Open normal DB
-  s = rocksdb::DB::Open(options, db_path, &db);
-  assert(s.ok());
-#else
-  // Open DB interface with sharding.
-  int iothreads = num_shards;
-  //assert(iface.Open(db_path.c_str(), num_shards, iothreads, db_cache_mb));
-  assert(iface.Open((const char**)&db_paths[0], db_paths.size(), num_shards, iothreads, db_cache_mb));
-#endif
+  //if (!shard.OpenDB(db_path)) {
+  if (!shard.OpenForBulkLoad(db_path)) {
+    err("failed to open db\n");
+    return -1;
+  }
 
+  char tmpbuf[10000];
+  int tsize = 1000;
   if (single_write) {
-    Write(single_write_key, &iface);
+    arc4random_buf(tmpbuf, tsize);
+    shard.Put(single_write_key.c_str(),
+              single_write_key.size(),
+              tmpbuf,
+              tsize);
   }
   if (single_read) {
-    Read(single_read_key, &iface);
+    string value;
+    shard.Get(single_read_key, &value);
+    printf("read return: \"%s\", size %ld\n",
+           value.c_str(), value.size());
   }
   if (single_write || single_read) {
     return 0;
   }
-*/
-
 
   // Init random number.
   std::srand(NowInUsec());
@@ -651,7 +646,6 @@ int main(int argc, char** argv) {
 
   free(histo_read);
   free(histo_write);
-  //delete [] workers;
   return 0;
 }
 

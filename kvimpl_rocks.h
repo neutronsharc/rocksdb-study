@@ -56,19 +56,38 @@ struct QueuedTask {
 
 class RocksDBShard {
  public:
-  RocksDBShard() {}
+  RocksDBShard() : db_(nullptr) {}
 
   ~RocksDBShard() {
     if (db_) {
+      dbg("will close rocksdb at %s\n", db_path_.c_str());
       delete db_;
+      db_ = nullptr;
     }
   }
+
+  bool OpenDBWithRetry(rocksdb::Options& opt,
+                       const string& path,
+                       rocksdb::DB **db);
+
+  void CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end);
+
+  bool OpenForBulkLoad(const string& path);
+
+  bool OpenDB(const std::string& path, const std::string& wal_path);
+
+  bool OpenDB(const std::string& path);
 
   bool OpenDB(const string& dbPath,
               int blockCacheMB,
               CompactionStyle cstyle,
               rocksdb::Env* env);
 
+  bool Put(const char* key, int klen, const char* value, int vlen);
+
+  bool Get(const string& key, string* value);
+
+  // Obsolete.
   bool Get(KVRequest*  p);
 
   bool MultiGet(KVRequest* requests, int numRequests);
@@ -85,35 +104,42 @@ class RocksDBShard {
 
   uint64_t GetMemoryUsage();
 
-  string dbPath_;
+  /////////////////////
+
+  string db_path_;
+  string wal_path_;
+  bool disable_wal_;
   rocksdb::DB* db_;
   rocksdb::Options options_;
+  std::shared_ptr<rocksdb::Statistics> stats_;
+
   rocksdb::WriteOptions write_options_;
   rocksdb::ReadOptions read_options_;
 };
 
-class RocksDBInterface : public KVStore {
+
+class RocksDBEngine : public KVStore {
  public:
-  RocksDBInterface() : db_(NULL) {}
+  RocksDBEngine() : db_(NULL) {}
 
   // To close a RocksDB interface, just delete the db obj.
-  ~RocksDBInterface() {
+  ~RocksDBEngine() {
     for (RocksDBShard* shard : db_shards_) {
-      printf("close DB %s\n", shard->dbPath_.c_str());
+      printf("close DB %s\n", shard->db_path_.c_str());
       delete shard;
     }
     if (db_) {
-      printf("close DB at: ");
-      for (int i = 0; i < db_paths_.size(); i++) {
-        printf("%s ", db_paths_[i].c_str());
-      }
-      printf("\n");
+      dbg("close DB at %s\n", db_path_.c_str());
       delete db_;
       db_ = NULL;
     }
   }
 
-  bool OpenDB(const char* dbPath, int numIOThreads, int blockCacheMB);
+  bool CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end) {}
+
+  bool OpenForBulkLoad() {}
+
+  bool OpenDB(const char* path, int numIOThreads, int blockCacheMB);
 
   bool Open(const char* dbPath,
             int numShards,
@@ -157,11 +183,18 @@ class RocksDBInterface : public KVStore {
 
   bool GetMemoryUsage(KVRequest* p);
 
+  void set_db_path(string& path) { db_path_ = path; }
+
+  void set_wal_path(string& path) { wal_path_ = path; }
+
+ private:
   vector<string> db_paths_;
-  rocksdb::DB *db_;
+  string db_path_;
+  string wal_path_;
   rocksdb::Options options_;
   rocksdb::WriteOptions write_options_;
   rocksdb::ReadOptions read_options_;
+  rocksdb::DB *db_;
 
   int num_io_threads_;
   unique_ptr<ThreadPool> thread_pool_;

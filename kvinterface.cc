@@ -8,6 +8,8 @@
 #include "debug.h"
 #include "utils.h"
 
+using namespace std;
+
 const char* KVCmdName[] = {
   "GET",
   "PUT",
@@ -29,13 +31,13 @@ void* OpenDB(const char* dbPath, int numShards, int cacheMB) {
   strcpy(origPath, dbPath);
   vector<char*> paths = SplitString(origPath, ",");
 
-  printf("Will open DB in %d shards at %d locations\n", numShards, paths.size());
+  printf("Will open DB in %d shards at %ld locations\n", numShards, paths.size());
   for (int i = 0; i < paths.size(); i++) {
     printf("\t%s\n", paths[i]);
   }
 
   int numIOThreads = numShards;
-  RocksDBInterface *rdb = new RocksDBInterface();
+  RocksDBEngine *rdb = new RocksDBEngine();
 
   // Use Universal-compaction by default.
   rdb->Open((const char**)&paths[0], paths.size(), numShards, numIOThreads, cacheMB);
@@ -45,7 +47,7 @@ void* OpenDB(const char* dbPath, int numShards, int cacheMB) {
 
 // Open the DB
 void CloseDB(void* dbHandler) {
-  delete (RocksDBInterface*)dbHandler;
+  delete (RocksDBEngine*)dbHandler;
 }
 
 // Run the requests, block until the rqsts finished,
@@ -55,7 +57,7 @@ int KVRunCommand(void* dbHandler, KVRequest* request, int numRequests) {
     return 0;
   }
 
-  RocksDBInterface *rdb = (RocksDBInterface*)dbHandler;
+  RocksDBEngine *rdb = (RocksDBEngine*)dbHandler;
   if (numRequests == 1) {
     request->reserved = NULL;
     QueuedTask task;

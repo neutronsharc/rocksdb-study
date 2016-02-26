@@ -38,7 +38,7 @@ struct KVRequest {
 
   // Value and length. For "get" these are set by DB.
   char *value;
-  size_t vlen;
+  int vlen;
 
   int retcode;
 

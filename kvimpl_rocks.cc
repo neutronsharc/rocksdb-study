@@ -13,10 +13,14 @@
 #include <thread>
 #include <typeinfo>
 
+#include "rocksdb/cache.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
-#include "rocksdb/slice.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/options.h"
+#include "rocksdb/slice.h"
+#include "rocksdb/statistics.h"
+#include "rocksdb/table.h"
 
 #include "debug.h"
 #include "hash.h"
@@ -24,8 +28,132 @@
 #include "kvimpl_rocks.h"
 #include "rocksdb_tuning.h"
 
+using namespace std;
 
-bool RocksDBShard::OpenDB(const string& dbPath,
+bool RocksDBShard::OpenDBWithRetry(rocksdb::Options& opt,
+                                   const string& path,
+                                   rocksdb::DB **db) {
+  rocksdb::Status status;
+
+  do {
+    status = rocksdb::DB::Open(opt, path, db);
+    if (status.ok()) {
+     return true;
+    } else if (status.IsCorruption()) {
+      err("db path corrupted: %s\n", path.c_str());
+      status = rocksdb::RepairDB(path, opt);
+      if (!status.ok()) {
+        err("cannot repare db at : %s\n", path.c_str());
+        return false;
+      }
+    } else {
+      err("failed to init db %s, error = %s\n",
+          path.c_str(), status.ToString().c_str());
+      return false;
+    }
+  } while (1);
+
+}
+
+bool RocksDBShard::OpenForBulkLoad(const string& path) {
+
+  options_.PrepareForBulkLoad();
+  db_path_ = path;
+
+  rocksdb::Status status;
+
+  return OpenDBWithRetry(options_, db_path_, &db_);
+}
+
+void RocksDBShard::CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end) {
+  if (db_) {
+    rocksdb::CompactRangeOptions opt;
+    db_->CompactRange(opt, begin, end);
+  }
+}
+
+bool RocksDBShard::OpenDB(const std::string& path) {
+  // use only passes db path, so we disable WAL.
+  OpenDB(path, "");
+}
+
+bool RocksDBShard::OpenDB(const std::string& path, const std::string& wal_path) {
+  rocksdb::BlockBasedTableOptions blk_options;
+
+  uint64_t MB = 1024L * 1024;
+
+  // Block table params.
+  blk_options.block_size = 1024L * 8;
+  uint64_t blk_cache_size = 1024L * 1024 * 1024;
+  blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
+
+  blk_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+
+  options_.table_factory.reset(rocksdb::NewBlockBasedTableFactory(blk_options));
+
+  options_.compression = rocksdb::kSnappyCompression;
+
+  // Write buffer, flush, and sync.
+  options_.write_buffer_size = 64 * MB;
+  options_.max_write_buffer_number = 8;
+  options_.min_write_buffer_number_to_merge = 4;
+  options_.max_background_flushes = 2;
+  options_.disableDataSync = true;
+  options_.use_fsync = false;
+  options_.allow_mmap_reads = true;
+  options_.allow_mmap_writes = false;
+
+  // WAL log.
+  wal_path_ = wal_path;
+  if (wal_path_.length() > 0) {
+    disable_wal_ = false;
+  } else {
+    disable_wal_ = true;
+  }
+
+  // Compaction params.
+  options_.disable_auto_compactions = false;
+  options_.max_background_compactions = 32;
+  options_.target_file_size_base = 128 * MB;
+  options_.target_file_size_multiplier = 1;
+  options_.level0_file_num_compaction_trigger = 2;
+
+  // General params.
+  options_.create_if_missing = true;
+  options_.max_open_files = 5000;
+
+  options_.IncreaseParallelism();
+
+  options_.OptimizeLevelStyleCompaction();
+
+  stats_ = rocksdb::CreateDBStatistics();
+
+  return OpenDBWithRetry(options_, db_path_, &db_);
+}
+
+bool RocksDBShard::Put(const char* key, int klen, const char* value, int vlen) {
+  rocksdb::Slice k(key, klen);
+  rocksdb::Slice v(value, vlen);
+
+  rocksdb::WriteOptions wopt;
+  wopt.disableWAL = disable_wal_;
+
+  rocksdb::Status status = db_->Put(wopt, k, v);
+  return status.ok() ? true : false;
+}
+
+bool RocksDBShard::Get(const string& key, string* value) {
+  rocksdb::ReadOptions ropt;
+  ropt.fill_cache = true;
+  ropt.verify_checksums = true;
+
+  rocksdb::Slice skey(key.data(), key.size());
+
+  rocksdb::Status status = db_->Get(ropt, skey, value);
+  return status.ok() ? true : false;
+}
+
+bool RocksDBShard::OpenDB(const std::string& dbPath,
                           int blockCacheMB,
                           CompactionStyle cstyle,
                           rocksdb::Env* env) {
@@ -49,7 +177,7 @@ bool RocksDBShard::OpenDB(const string& dbPath,
   }
   printf("Have opened DB %s\n", dbPath.c_str());
 
-  dbPath_ = dbPath;
+  db_path_ = dbPath;
   return true;
 }
 
@@ -168,7 +296,7 @@ uint64_t RocksDBShard::GetNumberOfRecords() {
   if (ret) {
     return num;
   } else {
-    printf("Failed to get number of keys at shard %s\n", dbPath_.c_str());
+    printf("Failed to get number of keys at shard %s\n", db_path_.c_str());
     return 0;
   }
 }
@@ -186,13 +314,14 @@ uint64_t RocksDBShard::GetMemoryUsage() {
   if (ret) {
     return num;
   } else {
-    printf("Failed to get memory usage at shard %s\n", dbPath_.c_str());
+    printf("Failed to get memory usage at shard %s\n", db_path_.c_str());
     return 0;
   }
 }
 
 
-bool RocksDBInterface::Open(const char* dbPath,
+
+bool RocksDBEngine::Open(const char* dbPath,
                             int numShards,
                             int numIOThreads,
                             int blockCacheMB) {
@@ -205,7 +334,7 @@ bool RocksDBInterface::Open(const char* dbPath,
 
 // Open a multi-shard DB. Also prepare an io-thread pool associated with
 // this DB to run rqsts against individual shards.
-bool RocksDBInterface::Open(const char* dbPath,
+bool RocksDBEngine::Open(const char* dbPath,
                             int numShards,
                             int numIOThreads,
                             int blockCacheMB,
@@ -214,7 +343,7 @@ bool RocksDBInterface::Open(const char* dbPath,
   return Open(paths, 1, numShards, numIOThreads, blockCacheMB, cstyle);
 }
 
-bool RocksDBInterface::Open(const char* dbPaths[],
+bool RocksDBEngine::Open(const char* dbPaths[],
                             int numPaths,
                             int numShards,
                             int numIOThreads,
@@ -227,7 +356,7 @@ bool RocksDBInterface::Open(const char* dbPaths[],
 // Open a multi-shard DB that spans multiple directories.
 // Also prepare an io-thread pool associated with
 // this DB to run rqsts against individual shards.
-bool RocksDBInterface::Open(const char* dbPaths[],
+bool RocksDBEngine::Open(const char* dbPaths[],
                             int numPaths,
                             int numShards,
                             int numIOThreads,
@@ -281,12 +410,12 @@ bool RocksDBInterface::Open(const char* dbPaths[],
   return true;
 }
 
+
 // Open RocksDB in only 1 shard.
 // TODO: delete this method. Obsoleted.
-bool RocksDBInterface::OpenDB(const char* dbPath,
-                              int numIOThreads,
-                              int blockCacheMB) {
-  return false;
+bool RocksDBEngine::OpenDB(const char* dbPath,
+                           int numIOThreads,
+                           int blockCacheMB) {
 
   TuneUniversalStyleCompaction(&options_, blockCacheMB);
   write_options_.disableWAL = true;
@@ -299,7 +428,7 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
   assert(s.ok());
   printf("Have opened DB %s\n", dbPath);
 
-  //dbPath_ = dbPath;
+  //db_path_ = dbPath;
 
   // Open the thread pool.
   num_io_threads_ = numIOThreads;
@@ -312,12 +441,12 @@ bool RocksDBInterface::OpenDB(const char* dbPath,
 }
 
 // Post a request to worker thread pool.
-void RocksDBInterface::PostRequest(QueuedTask* p) {
+void RocksDBEngine::PostRequest(QueuedTask* p) {
   thread_pool_->AddWork((void*)p);
 }
 
 // Process the given request in sync way.
-bool RocksDBInterface::ProcessRequest(void* p) {
+bool RocksDBEngine::ProcessRequest(void* p) {
   QueuedTask* task = (QueuedTask*)p;
 
   if (task->type == MULTI_GET) {
@@ -360,7 +489,7 @@ bool RocksDBInterface::ProcessRequest(void* p) {
   return true;
 }
 
-bool RocksDBInterface::Get(KVRequest*  p)  {
+bool RocksDBEngine::Get(KVRequest*  p)  {
   uint32_t hv = bobhash(p->key, p->keylen, 0);
   RocksDBShard* db = db_shards_[hv % num_shards_];
   return db->Get(p);
@@ -391,7 +520,7 @@ bool RocksDBInterface::Get(KVRequest*  p)  {
   return true;
 }
 
-bool RocksDBInterface::Put(KVRequest*  p)  {
+bool RocksDBEngine::Put(KVRequest*  p)  {
   uint32_t hv = bobhash(p->key, p->keylen, 0);
   RocksDBShard* db = db_shards_[hv % num_shards_];
   return db->Put(p);
@@ -412,7 +541,7 @@ bool RocksDBInterface::Put(KVRequest*  p)  {
   return true;
 }
 
-bool RocksDBInterface::Delete(KVRequest*  p) {
+bool RocksDBEngine::Delete(KVRequest*  p) {
   uint32_t hv = bobhash(p->key, p->keylen, 0);
   RocksDBShard* db = db_shards_[hv % num_shards_];
   return db->Delete(p);
@@ -433,7 +562,7 @@ bool RocksDBInterface::Delete(KVRequest*  p) {
 
 // Multi-get. The individual get rqsts will be distributed to all shards
 // within this DB interface.
-bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
+bool RocksDBEngine::MultiGet(KVRequest* requests, int numRequests) {
   PerShardMultiGet perShardRqsts[num_shards_];
 
   int shardsUsed = 0;
@@ -518,7 +647,7 @@ bool RocksDBInterface::MultiGet(KVRequest* requests, int numRequests) {
 
 }
 
-bool RocksDBInterface::GetNumberOfRecords(KVRequest* request) {
+bool RocksDBEngine::GetNumberOfRecords(KVRequest* request) {
   uint64_t num = 0;
   for (int i = 0; i < db_shards_.size(); i++) {
     num += db_shards_[i]->GetNumberOfRecords();
@@ -527,7 +656,7 @@ bool RocksDBInterface::GetNumberOfRecords(KVRequest* request) {
   return true;
 }
 
-bool RocksDBInterface::GetDataSize(KVRequest* request) {
+bool RocksDBEngine::GetDataSize(KVRequest* request) {
   uint64_t num = 0;
   for (int i = 0; i < db_shards_.size(); i++) {
     num += db_shards_[i]->GetDataSize();
@@ -536,7 +665,7 @@ bool RocksDBInterface::GetDataSize(KVRequest* request) {
   return true;
 }
 
-bool RocksDBInterface::GetMemoryUsage(KVRequest* request) {
+bool RocksDBEngine::GetMemoryUsage(KVRequest* request) {
   uint64_t num = 0;
   for (int i = 0; i < db_shards_.size(); i++) {
     num += db_shards_[i]->GetMemoryUsage();
