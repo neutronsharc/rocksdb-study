@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "rocksdb/db.h"
+#include "rocksdb/env.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
 
@@ -54,6 +55,22 @@ struct QueuedTask {
   } task;
 };
 
+
+class RocksDBLogger: public rocksdb::Logger {
+ public:
+  virtual void Logv(const char* format, va_list ap) {
+    char logbuf[1024];
+    int len = vsnprintf(logbuf, sizeof(logbuf), format, ap);
+    if (len < sizeof(logbuf)) {
+      printf("%s\n", logbuf);
+    }
+  }
+  virtual void LogHeader(const char* format, va_list ap) {
+    Logv(format, ap);
+  }
+};
+
+
 class RocksDBShard {
  public:
   RocksDBShard() : db_(nullptr) {}
@@ -65,6 +82,9 @@ class RocksDBShard {
   bool OpenDBWithRetry(rocksdb::Options& opt,
                        const string& path,
                        rocksdb::DB **db);
+
+  // compact the entire shard.
+  void Compact();
 
   void CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end);
 
@@ -104,6 +124,7 @@ class RocksDBShard {
 
   /////////////////////
 
+  std::shared_ptr<RocksDBLogger> logger_;
   string db_path_;
   string wal_path_;
   bool disable_wal_;

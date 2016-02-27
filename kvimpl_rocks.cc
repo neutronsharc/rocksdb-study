@@ -60,12 +60,15 @@ bool RocksDBShard::OpenForBulkLoad(const string& path) {
 
   db_path_ = path;
 
+  // Disable WAL in bulk load mode.
+  disable_wal_ = true;
+
   options_.PrepareForBulkLoad();
 
-  options_.write_buffer_size = 16 * MB;
+  options_.write_buffer_size = 64 * MB;
   options_.max_write_buffer_number = 32;
   options_.min_write_buffer_number_to_merge = 2;
-  //options_.max_background_flushes = 2;
+  options_.allow_os_buffer = false;
 
   options_.create_if_missing = true;
   options_.create_missing_column_families = true;
@@ -74,27 +77,39 @@ bool RocksDBShard::OpenForBulkLoad(const string& path) {
   // Block table params.
   rocksdb::BlockBasedTableOptions blk_options;
   blk_options.block_size = 1024L * 8;
-  uint64_t blk_cache_size = 1024L * MB;
+  uint64_t blk_cache_size = 128 * MB;
   blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
   blk_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
-
   options_.table_factory.reset(rocksdb::NewBlockBasedTableFactory(blk_options));
 
   rocksdb::Status status;
+  logger_.reset(new RocksDBLogger());
+  options_.Dump(logger_.get());
+
+  // NOTE:: Below code will re-direct all RDB logs to stdout.
+  //options_.info_log = logger_;
+  //options_.info_log_level = rocksdb::INFO_LEVEL; //INFO_LEVEL;
 
   return OpenDBWithRetry(options_, db_path_, &db_);
 }
 
 bool RocksDBShard::OpenDB(const std::string& path) {
-  // use only passes db path, so we disable WAL.
+  // User only passes db path, so we disable WAL.
   return OpenDB(path, "");
 }
 
 bool RocksDBShard::OpenDB(const std::string& path,
                           const std::string& wal_path) {
+
+  int bkgnd_threads = 12;
+  int max_bkgnd_flushes = 2;
   uint64_t MB = 1024L * 1024;
 
   db_path_ = path;
+
+  options_.IncreaseParallelism(bkgnd_threads);
+
+  options_.OptimizeLevelStyleCompaction();
 
   // General params.
   options_.create_if_missing = true;
@@ -116,7 +131,7 @@ bool RocksDBShard::OpenDB(const std::string& path,
   options_.write_buffer_size = 64 * MB;
   options_.max_write_buffer_number = 8;
   options_.min_write_buffer_number_to_merge = 4;
-  options_.max_background_flushes = 2;
+  options_.max_background_flushes = max_bkgnd_flushes;
   options_.disableDataSync = true;
   options_.use_fsync = false;
   options_.allow_mmap_reads = true;
@@ -132,16 +147,26 @@ bool RocksDBShard::OpenDB(const std::string& path,
 
   // Compaction params.
   options_.disable_auto_compactions = false;
-  options_.max_background_compactions = 32;
+  options_.max_background_compactions = bkgnd_threads - max_bkgnd_flushes;
   options_.target_file_size_base = 128 * MB;
   options_.target_file_size_multiplier = 1;
   options_.level0_file_num_compaction_trigger = 2;
 
-  options_.IncreaseParallelism();
-
-  options_.OptimizeLevelStyleCompaction();
+  // HIGH background threads for flushes.
+  options_.env->SetBackgroundThreads(max_bkgnd_flushes,
+                                     rocksdb::Env::Priority::HIGH);
+  // LOW background threads for compactions.
+  options_.env->SetBackgroundThreads(bkgnd_threads - max_bkgnd_flushes,
+                                     rocksdb::Env::Priority::LOW);
 
   stats_ = rocksdb::CreateDBStatistics();
+
+  logger_.reset(new RocksDBLogger());
+  options_.Dump(logger_.get());
+
+  // NOTE:: Below code will re-direct all RDB logs to stdout.
+  //options_.info_log = logger_;
+  //options_.info_log_level = rocksdb::INFO_LEVEL; //INFO_LEVEL;
 
   return OpenDBWithRetry(options_, db_path_, &db_);
 }
@@ -154,9 +179,19 @@ void RocksDBShard::CloseDB() {
   }
 }
 
+void RocksDBShard::Compact() {
+  uint64_t t1 = options_.env->NowMicros();
+  printf("\bBegin compacting shard %s\n", db_path_.c_str());
+  CompactRange(nullptr, nullptr);
+  printf("\tFinished compacting shard %s in %.3f seconds\n",
+         db_path_.c_str(),
+         (options_.env->NowMicros() - t1) / 1000000.0);
+}
+
 void RocksDBShard::CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end) {
   if (db_) {
     rocksdb::CompactRangeOptions opt;
+    opt.change_level = true;
     db_->CompactRange(opt, begin, end);
   }
 }

@@ -154,6 +154,7 @@ static uint64_t total_write_target_qps = 1000000L;
 static int num_shards = 8;
 static uint64_t num_ops = 1000L;
 static bool count_latency = false;
+static bool compact_before_workload = false;
 
 static pthread_mutex_t read_histo_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t write_histo_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -245,6 +246,8 @@ static void Worker(TaskContext *task) {
         err("task %d: failed to write key %s (data size %d): %s\n",
             task->id, key, objsize, status.ToString().c_str());
         task->write_failure++;
+        // don't forgive write failure during init load.
+        assert(0);
       } else {
         task->num_writes++;
       }
@@ -477,6 +480,7 @@ void help() {
   printf("-x <key>             : write this key with random value of given size\n");
   printf("-y <key>             : read this key from DB\n");
   printf("-l                   : count r/w latency. Def not\n");
+  printf("-a                   : run compaction before workload starts. Def not\n");
   printf("-o                   : overwrite entire DB before test. Def not\n");
   printf("-h                   : this message\n");
   //printf("-d <shards>          : number of shards. Def = 8\n");
@@ -494,7 +498,7 @@ int main(int argc, char** argv) {
   string single_read_key, single_write_key;
   vector<char*> sizes;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:ohl")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:ohla")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -545,6 +549,10 @@ int main(int argc, char** argv) {
       case 'c':
         db_cache_mb = atoi(optarg);
         printf("will use %ld MB DB block cache\n", db_cache_mb);
+        break;
+      case 'a':
+        compact_before_workload = true;
+        printf("will run major compaction before workload.\n");
         break;
       case 'q':
         total_target_qps = atol(optarg);
@@ -671,6 +679,7 @@ int main(int argc, char** argv) {
   ///////////////////
   // Phase 1: populate the DB with data.
   if (overwrite_all) {
+    uint64_t t1 = NowInUsec();
     if (!shard.OpenForBulkLoad(db_path)) {
       err("failed to open DB for overwrite: %s\n", db_path.c_str());
       return -1;
@@ -682,8 +691,21 @@ int main(int argc, char** argv) {
     for (auto& task : tasks) {
       sem_wait(&task.sem_end);
     }
-    printf("\nfinished overwrite\n");
     shard.CloseDB();
+
+    uint64_t t2 = NowInUsec() - t1;
+    double data_mb = init_num_objs * obj_sizes[0] / 1000000.0;
+    printf("\nFinished overwrite, has written %.3f MB in %.3f sec, "
+           "bw = %.3f MB/s\n\n",
+           data_mb,
+           t2 / 1000000.0,
+           data_mb * 1000000 / t2);
+    // Now do a compaction.
+    printf("%s: will compact after bulk load...\n",
+           TimestampString().c_str());
+    shard.Compact();
+    printf("%s: finished compaction after bulk load.",
+           TimestampString().c_str());
   }
 
   ////////////////
@@ -694,9 +716,13 @@ int main(int argc, char** argv) {
   }
 
   // Now do a compaction.
-  printf("before compaction\n");
-  shard.CompactRange(nullptr, nullptr);
-  printf("after compaction\n");
+  if (compact_before_workload) {
+    printf("%s: will run compaction before workload...\n",
+           TimestampString().c_str());
+    shard.Compact();
+    printf("%s: finished compaction before workload\n",
+           TimestampString().c_str());
+  }
 
   printf("\nStart workload ...\n");
 
