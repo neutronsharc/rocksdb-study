@@ -56,37 +56,56 @@ bool RocksDBShard::OpenDBWithRetry(rocksdb::Options& opt,
 }
 
 bool RocksDBShard::OpenForBulkLoad(const string& path) {
+  uint64_t MB = 1024L * 1024;
+
+  db_path_ = path;
 
   options_.PrepareForBulkLoad();
-  db_path_ = path;
+
+  options_.write_buffer_size = 16 * MB;
+  options_.max_write_buffer_number = 32;
+  options_.min_write_buffer_number_to_merge = 2;
+  //options_.max_background_flushes = 2;
+
+  options_.create_if_missing = true;
+  options_.create_missing_column_families = true;
+  options_.max_open_files = 10000;
+
+  // Block table params.
+  rocksdb::BlockBasedTableOptions blk_options;
+  blk_options.block_size = 1024L * 8;
+  uint64_t blk_cache_size = 1024L * MB;
+  blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
+  blk_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
+
+  options_.table_factory.reset(rocksdb::NewBlockBasedTableFactory(blk_options));
 
   rocksdb::Status status;
 
   return OpenDBWithRetry(options_, db_path_, &db_);
 }
 
-void RocksDBShard::CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end) {
-  if (db_) {
-    rocksdb::CompactRangeOptions opt;
-    db_->CompactRange(opt, begin, end);
-  }
-}
-
 bool RocksDBShard::OpenDB(const std::string& path) {
   // use only passes db path, so we disable WAL.
-  OpenDB(path, "");
+  return OpenDB(path, "");
 }
 
-bool RocksDBShard::OpenDB(const std::string& path, const std::string& wal_path) {
-  rocksdb::BlockBasedTableOptions blk_options;
-
+bool RocksDBShard::OpenDB(const std::string& path,
+                          const std::string& wal_path) {
   uint64_t MB = 1024L * 1024;
 
-  // Block table params.
-  blk_options.block_size = 1024L * 8;
-  uint64_t blk_cache_size = 1024L * 1024 * 1024;
-  blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
+  db_path_ = path;
 
+  // General params.
+  options_.create_if_missing = true;
+  options_.create_missing_column_families = true;
+  options_.max_open_files = 5000;
+
+  // Block table params.
+  rocksdb::BlockBasedTableOptions blk_options;
+  blk_options.block_size = 1024L * 8;
+  uint64_t blk_cache_size = 1024L * MB;
+  blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
   blk_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
 
   options_.table_factory.reset(rocksdb::NewBlockBasedTableFactory(blk_options));
@@ -118,10 +137,6 @@ bool RocksDBShard::OpenDB(const std::string& path, const std::string& wal_path) 
   options_.target_file_size_multiplier = 1;
   options_.level0_file_num_compaction_trigger = 2;
 
-  // General params.
-  options_.create_if_missing = true;
-  options_.max_open_files = 5000;
-
   options_.IncreaseParallelism();
 
   options_.OptimizeLevelStyleCompaction();
@@ -131,7 +146,26 @@ bool RocksDBShard::OpenDB(const std::string& path, const std::string& wal_path) 
   return OpenDBWithRetry(options_, db_path_, &db_);
 }
 
-bool RocksDBShard::Put(const char* key, int klen, const char* value, int vlen) {
+void RocksDBShard::CloseDB() {
+  if (db_) {
+    dbg("will close rocksdb at %s\n", db_path_.c_str());
+    delete db_;
+    db_ = nullptr;
+  }
+}
+
+void RocksDBShard::CompactRange(rocksdb::Slice* begin, rocksdb::Slice* end) {
+  if (db_) {
+    rocksdb::CompactRangeOptions opt;
+    db_->CompactRange(opt, begin, end);
+  }
+}
+
+
+rocksdb::Status RocksDBShard::Put(const char* key,
+                                  int klen,
+                                  const char* value,
+                                  int vlen) {
   rocksdb::Slice k(key, klen);
   rocksdb::Slice v(value, vlen);
 
@@ -139,10 +173,10 @@ bool RocksDBShard::Put(const char* key, int klen, const char* value, int vlen) {
   wopt.disableWAL = disable_wal_;
 
   rocksdb::Status status = db_->Put(wopt, k, v);
-  return status.ok() ? true : false;
+  return status;
 }
 
-bool RocksDBShard::Get(const string& key, string* value) {
+rocksdb::Status RocksDBShard::Get(const string& key, string* value) {
   rocksdb::ReadOptions ropt;
   ropt.fill_cache = true;
   ropt.verify_checksums = true;
@@ -150,7 +184,7 @@ bool RocksDBShard::Get(const string& key, string* value) {
   rocksdb::Slice skey(key.data(), key.size());
 
   rocksdb::Status status = db_->Get(ropt, skey, value);
-  return status.ok() ? true : false;
+  return status;
 }
 
 bool RocksDBShard::OpenDB(const std::string& dbPath,
@@ -600,7 +634,7 @@ bool RocksDBEngine::MultiGet(KVRequest* requests, int numRequests) {
     if (perShardRqsts[i].requests.size() == 0) {
       continue;
     }
-    dbg("post mget %d rqsts to shard %d\n",
+    dbg("post mget %ld rqsts to shard %d\n",
         perShardRqsts[i].requests.size(), i);
 
     tasks[postedShards].type = MULTI_GET;

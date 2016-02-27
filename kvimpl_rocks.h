@@ -59,11 +59,7 @@ class RocksDBShard {
   RocksDBShard() : db_(nullptr) {}
 
   ~RocksDBShard() {
-    if (db_) {
-      dbg("will close rocksdb at %s\n", db_path_.c_str());
-      delete db_;
-      db_ = nullptr;
-    }
+    CloseDB();
   }
 
   bool OpenDBWithRetry(rocksdb::Options& opt,
@@ -83,9 +79,11 @@ class RocksDBShard {
               CompactionStyle cstyle,
               rocksdb::Env* env);
 
-  bool Put(const char* key, int klen, const char* value, int vlen);
+  void CloseDB();
 
-  bool Get(const string& key, string* value);
+  rocksdb::Status Put(const char* key, int klen, const char* value, int vlen);
+
+  rocksdb::Status Get(const string& key, string* value);
 
   // Obsolete.
   bool Get(KVRequest*  p);

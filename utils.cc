@@ -10,9 +10,12 @@
 #include <sched.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <ctime>
 
 #include "utils.h"
+
+#include <ctime>
+#include <string>
+#include <openssl/sha.h>
 
 using namespace std;
 
@@ -96,22 +99,6 @@ vector<char*> SplitString(char *input, const char *delimiters) {
   return ss;
 }
 
-// Split a string into tokens, separated by delimiter.
-vector<string> SplitString(string input, const char *delimiter) {
-  vector<string> ss;
-  string token;
-  size_t pos = 0;
-  size_t begin = 0;
-
-  while ((pos = input.find(delimiter, pos)) != string::npos) {
-    token = input.substr(begin, pos - begin);
-    ss.push_back(token);
-    pos += strlen(delimiter);
-    begin = pos;
-  }
-  ss.push_back(input.substr(begin, input.size() - begin));
-  return ss;
-}
 
 
 // Convert a string in form of 123K/M/G to its decimal value.
@@ -345,7 +332,48 @@ void DeleteTimer(timer_t *tm) {
     timer_delete(*tm);
 }
 
-std::string TimestampString() {
+// Encode a given buffer.
+//
+// The encoded format is:
+//   SHA1 hash of rest of buffer (20 bytes)
+//   buflen    (4 bytes)
+//   data      (buflen - 4 - 20)
+//
+void EncodeBuffer(char *buf, int buflen) {
+  int md_len = SHA_DIGEST_LENGTH;   // 20 bytes
+  assert(buflen > (md_len + sizeof(int)));
+
+  memcpy(buf + md_len, &buflen, sizeof(int));
+
+  unsigned char hash[md_len];
+  SHA1((const unsigned char*)(buf + md_len), buflen - md_len, hash);
+
+  memcpy(buf, hash, md_len);
+}
+
+// Decode a buffer produced by "EncodeBuffer", and check data integrity.
+bool DecodeBuffer(char *buf, int buflen) {
+  int md_len = SHA_DIGEST_LENGTH;
+  unsigned char hash[md_len];
+  SHA1((const unsigned char*)(buf + md_len), buflen - md_len, hash);
+
+  if (memcmp(hash, buf, md_len) != 0) {
+    printf("ERROR: sha1 mismatch\n");
+    return false;
+  }
+
+  int encode_len;
+  memcpy(&encode_len, buf + md_len, sizeof(int));
+  if (encode_len != buflen) {
+    printf("ERROR: encoded data size %d != expected %d\n",
+           encode_len, buflen);
+    return false;
+  }
+
+  return true;
+}
+
+string TimestampString() {
   std::time_t now = std::time(NULL);
   std::tm *ptm = std::localtime(&now);
   char buffer[100];

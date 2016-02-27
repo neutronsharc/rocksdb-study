@@ -33,13 +33,16 @@ using namespace std;
 
 using namespace std::chrono;
 
+static uint64_t GetRandom(uint64_t max_val) {
+  return std::rand() % max_val;
+}
 
 struct TaskContext {
   // worker thread ID
   int id;
 
   // Init db with these many objs.
-  uint64_t init_obj_cnt;
+  uint64_t init_num_objs;
 
   // Obj id to create if next op is write.
   uint64_t next_obj_id;
@@ -56,27 +59,50 @@ struct TaskContext {
   uint64_t num_reads;
   uint64_t read_bytes;
   uint64_t read_miss;
-  uint64_t read_failures;
+  uint64_t read_failure;
 
   uint64_t num_writes;
   uint64_t write_bytes;
-  uint64_t write_failures;
+  uint64_t write_failure;
+
+  // When the task starts.
+  uint64_t start_usec;
+  // total # of ops done by this task.
+  uint64_t total_ops;
 
   // semaphores to sync with main thread.
   sem_t sem_begin;
   sem_t sem_end;
 
-  rocksdb::DB *db;
-  rocksdb::WriteOptions write_options;
-  rocksdb::ReadOptions read_options;
+  RocksDBShard *db;
 
-  RocksDBEngine* db_iface;
+  /////////////////////
 
-  // A lock to sync output.
-  mutex *output_lock;
+  bool ShouldWrite();
 
+  void RateLimit();
 };
 
+
+void TaskContext::RateLimit() {
+  uint64_t target_time_usec = total_ops * 1000000 / target_qps;
+  uint64_t actual_time_usec = NowInUsec() - start_usec;
+
+  if (actual_time_usec < target_time_usec) {
+    usleep(target_time_usec - actual_time_usec);
+  }
+}
+
+bool TaskContext::ShouldWrite() {
+  if (write_ratio == 0) {
+    return false;
+  }
+
+  uint64_t maxv = 1000000;
+  uint64_t thresh = maxv * write_ratio;
+  uint64_t v = GetRandom(maxv);
+  return v < thresh;
+}
 
 
 // Operation stats.
@@ -127,13 +153,15 @@ static bool overwrite_all = false;
 static uint64_t total_write_target_qps = 1000000L;
 static int num_shards = 8;
 static uint64_t num_ops = 1000L;
+static bool count_latency = false;
 
-static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct hdr_histogram *histo_read = NULL;
-static struct hdr_histogram *histo_write = NULL;
+static pthread_mutex_t read_histo_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t write_histo_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct hdr_histogram *read_histo = NULL;
+static struct hdr_histogram *write_histo = NULL;
 
 
-void TimerCallback(union sigval sv) {
+static void TimerCallback(union sigval sv) {
   TimerContext *tc = (TimerContext*)sv.sival_ptr;
 
   vector<TaskContext>& tasks = *tc->tasks;
@@ -147,13 +175,19 @@ void TimerCallback(union sigval sv) {
   for (int i = 0; i < ntasks; i++) {
     tc->stats.reads += tasks[i].num_reads;
     tc->stats.read_bytes += tasks[i].read_bytes;
-    tc->stats.read_failure += tasks[i].read_failures;
+    tc->stats.read_failure += tasks[i].read_failure;
     tc->stats.read_miss += tasks[i].read_miss;
-
 
     tc->stats.writes += tasks[i].num_writes;
     tc->stats.write_bytes  += tasks[i].write_bytes;
-    tc->stats.write_failure  += tasks[i].write_failures;
+    tc->stats.write_failure  += tasks[i].write_failure;
+  }
+
+  uint64_t last_obj_id;
+  if (overwrite_all) {
+    last_obj_id = tc->stats.writes;
+  } else {
+    last_obj_id = tc->stats.writes + init_num_objs;
   }
 
   printf("%s: proc %d in past %d seconds:  %ld reads (%ld failure, %ld miss), "
@@ -166,91 +200,118 @@ void TimerCallback(union sigval sv) {
          tc->stats.read_miss - last_stats.read_miss,
          tc->stats.writes - last_stats.writes,
          tc->stats.write_failure - last_stats.write_failure,
-         init_num_objs
+         last_obj_id
          );
 
 }
 
-vector<rocksdb::ColumnFamilyHandle*> family_handles;
-
-uint64_t GetMemoryUsage(RocksDBEngine *dbIface);
-
-unsigned long time_microsec() {
-  struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
-  return t.tv_sec * 1000000 + t.tv_nsec / 1000;
+static void AddReadLatHisto(uint64_t lat) {
+  pthread_mutex_lock(&read_histo_lock);
+  hdr_record_value(read_histo, lat);
+  pthread_mutex_unlock(&read_histo_lock);
 }
 
-long to_microsec(struct timespec *ts) {
-  return ts->tv_sec * 1000000 + ts->tv_nsec / 1000;
+static void AddWriteLatHisto(uint64_t lat) {
+  pthread_mutex_lock(&write_histo_lock);
+  hdr_record_value(write_histo, lat);
+  pthread_mutex_unlock(&write_histo_lock);
 }
 
-long get_diff_microsec(struct timespec *begin, struct timespec *end) {
-  return to_microsec(end) - to_microsec(begin);
-}
-
-long to_millisec(struct timespec *ts) {
-  return ts->tv_sec * 1000 + ts->tv_nsec / 1000000;
-}
-
-long get_diff_millisec(struct timespec *begin, struct timespec *end) {
-  return to_millisec(end) - to_millisec(begin);
-}
-
-unsigned long get_random(unsigned long max_val) {
-  return std::rand() % max_val;
-}
-
-void PrintStats(int *latency, int size, const char *header) {
-  int lat_min = latency[0];
-  int lat_10 = latency[(int)(size * 0.1)];
-  int lat_20 = latency[(int)(size * 0.2)];
-  int lat_50 = latency[(int)(size * 0.5)];
-  int lat_90 = latency[(int)(size * 0.9)];
-  int lat_95 = latency[(int)(size * 0.95)];
-  int lat_99 = latency[(int)(size * 0.99)];
-  int lat_999 = latency[(int)(size * 0.999)];
-  int lat_max = latency[size - 1];
-  cout << header << endl;
-  cout << setw(15) << "min"
-       << setw(15) << "10 %"
-       << setw(15) << "20 %"
-       << setw(15) << "50 %"
-       << setw(15) << "90 %"
-       << setw(15) << "95 %"
-       << setw(15) << "99 %"
-       << setw(15) << "99.9 %"
-       << setw(15) << "max" << endl;
-  cout << setw(15) << lat_min / 1000.0
-       << setw(15) << lat_10 / 1000.0
-       << setw(15) << lat_20 / 1000.0
-       << setw(15) << lat_50 / 1000.0
-       << setw(15) << lat_90 / 1000.0
-       << setw(15) << lat_95 / 1000.0
-       << setw(15) << lat_99 / 1000.0
-       << setw(15) << lat_999 / 1000.0
-       << setw(15) << lat_max / 1000.0 << endl;
-}
-
-void Worker(TaskContext *task) {
+static void Worker(TaskContext *task) {
 
   char key[128];
-  char charvalue[10002];
-  int obj_size = 4000;
-
-  assert(obj_size <= 10000);
+  char charvalue[100000];
+  int objsize;
 
   rocksdb::Status status;
-  unsigned long tBeginUs, tEndUs, t1, t2;
 
-  long elapsed_usec;
   uint64_t begin_usec = NowInUsec();
 
-  while (NowInUsec() - begin_usec < task->runtime_usec) {
-    usleep(10000);
+  if (overwrite_all) {
+    sem_wait(&task->sem_begin);
+    dbg("Task %d: overwrite with %ld objs ...\n",
+        task->id, task->init_num_objs);
+
+    for (int i = 0; i < task->init_num_objs; i++) {
+      objsize = obj_sizes[i % obj_sizes.size()];
+
+      sprintf(key, "thr-%d-key-%d", task->id, i);
+
+      arc4random_buf(charvalue, objsize);
+      EncodeBuffer(charvalue, objsize);
+
+      status = task->db->Put(key, strlen(key), charvalue, objsize);
+      if (!status.ok()) {
+        err("task %d: failed to write key %s (data size %d): %s\n",
+            task->id, key, objsize, status.ToString().c_str());
+        task->write_failure++;
+      } else {
+        task->num_writes++;
+        task->write_bytes += objsize;
+      }
+    }
+    sem_post(&task->sem_end);
+    dbg("Task %d: finished overwriting\n", task->id);
   }
 
-  printf("task %d finished...\n", task->id);
+  uint64_t obj_id = task->init_num_objs;
+  uint64_t ops = 0;
+  uint64_t t1;
+
+  sem_wait(&task->sem_begin);
+  dbg("Task %d: start workload...\n", task->id);
+  task->start_usec = NowInUsec();
+
+  while (NowInUsec() - task->start_usec < task->runtime_usec) {
+    task->total_ops++;
+
+    if (task->ShouldWrite()) {
+      // is a write
+      objsize = obj_sizes[obj_id  % obj_sizes.size()];
+      sprintf(key, "thr-%d-key-%ld", task->id, obj_id);
+      arc4random_buf(charvalue, objsize);
+      EncodeBuffer(charvalue, objsize);
+
+      t1 = NowInUsec();
+      status = task->db->Put(key, strlen(key), charvalue, objsize);
+      if (count_latency) {
+        AddWriteLatHisto(NowInUsec() - t1);
+      }
+      if (status.ok()) {
+        task->num_writes++;
+        task->write_bytes += objsize;
+        obj_id++;
+      } else {
+        err("task %d: failed to write key %s (data size %d): %s\n",
+            task->id, key, objsize, status.ToString().c_str());
+        task->write_failure++;
+      }
+    } else {
+      string value;
+      uint64_t kid = GetRandom(obj_id);
+      sprintf(key, "thr-%d-key-%ld", task->id, kid);
+      // is a read
+      t1 = NowInUsec();
+      status = task->db->Get(key, &value);
+      if (count_latency) {
+        AddReadLatHisto(NowInUsec() - t1);
+      }
+      if (status.ok()) {
+        task->num_reads++;
+        task->read_bytes += value.size();
+      } else if (status.IsNotFound()) {
+        task->read_miss++;
+      } else {
+        task->read_failure++;
+        err("task %d: failed to read key %s: %s\n",
+            task->id, key, status.ToString().c_str());
+      }
+    }
+    task->RateLimit();
+  }
+  sem_post(&task->sem_end);
+  dbg("Task %d: workload finished\n", task->id);
+
 }
 
 void TryKVInterface(string &dbpath, int numThreads, int cacheMB) {
@@ -287,7 +348,7 @@ void TryRocksDB(string &dbpath, int num_threads, int cache_mb) {
 
   char key[128];
   char charvalue[1024];
-  int objSize = 1023;
+  int objsize = 1023;
 
   KVRequest write;
   write.type = PUT;
@@ -366,13 +427,39 @@ void Read(string key, RocksDBEngine *dbIface) {
   }
 }
 
-uint64_t GetMemoryUsage(RocksDBEngine *dbIface) {
-  KVRequest rqst;
-  memset(&rqst, 0, sizeof(rqst));
-  rqst.type = GET_MEMORY_USAGE;
-  dbIface->GetMemoryUsage(&rqst);
-  return rqst.vlen;
+static void PrintHistoStats(struct hdr_histogram *histogram,
+                            const char *header) {
+  int hist_min = hdr_value_at_percentile(histogram, 0);
+  int hist_max = (int)hdr_max(histogram);
+  int hist_p10 = hdr_value_at_percentile(histogram, 10);
+  int hist_p20 = hdr_value_at_percentile(histogram, 20);
+  int hist_p50 = hdr_value_at_percentile(histogram, 50);
+  int hist_p90 = hdr_value_at_percentile(histogram, 90);
+  int hist_p95 = hdr_value_at_percentile(histogram, 95);
+  int hist_p99 = hdr_value_at_percentile(histogram, 99);
+  int hist_p999 = hdr_value_at_percentile(histogram, 99.9);
+
+  cout << header << endl;
+  cout << setw(12) << "min"
+       << setw(12) << "10 %"
+       << setw(12) << "20 %"
+       << setw(12) << "50 %"
+       << setw(12) << "90 %"
+       << setw(12) << "95 %"
+       << setw(12) << "99 %"
+       << setw(12) << "99.9 %"
+       << setw(12) << "max" << endl;
+  cout << setw(12) << hist_min / 1000.0
+       << setw(12) << hist_p10 / 1000.0
+       << setw(12) << hist_p20 / 1000.0
+       << setw(12) << hist_p50 / 1000.0
+       << setw(12) << hist_p90 / 1000.0
+       << setw(12) << hist_p95 / 1000.0
+       << setw(12) << hist_p99 / 1000.0
+       << setw(12) << hist_p999 / 1000.0
+       << setw(12) << hist_max / 1000.0 << endl;
 }
+
 
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
@@ -390,6 +477,7 @@ void help() {
          "                       def = 1 key\n");
   printf("-x <key>             : write this key with random value of given size\n");
   printf("-y <key>             : read this key from DB\n");
+  printf("-l                   : count r/w latency. Def not\n");
   printf("-o                   : overwrite entire DB before test. Def not\n");
   printf("-h                   : this message\n");
   //printf("-d <shards>          : number of shards. Def = 8\n");
@@ -407,7 +495,7 @@ int main(int argc, char** argv) {
   string single_read_key, single_write_key;
   vector<char*> sizes;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:oh")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:ohl")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -467,6 +555,10 @@ int main(int argc, char** argv) {
         num_keys_per_read = atoi(optarg);
         printf("Multi-get keys = %d\n", num_keys_per_read);
         break;
+      case 'l':
+        count_latency = true;
+        printf("Will count r/w latency\n");
+        break;
       case '?':
         help();
         return 0;
@@ -486,40 +578,45 @@ int main(int argc, char** argv) {
       obj_sizes.push_back(atoi(s));
     }
   }
-  //TryThreadPool();
-  //TryRocksDB(kDBPath, numTasks, cacheMB);
-  //TryKVInterface(kDBPath, numTasks, cacheMB);
-  //return 0;
 
-  vector<std::thread> workers;
-  mutex outputLock;
+  procid = ::getpid();
 
   cout << "will run " << num_threads << " benchmark threads on DB " << db_path << endl;
 
   RocksDBShard shard;
 
-  //if (!shard.OpenDB(db_path)) {
-  if (!shard.OpenForBulkLoad(db_path)) {
-    err("failed to open db\n");
-    return -1;
+  // Single-read  or single-write needs special care.
+  if (single_write || single_read) {
+    if (!shard.OpenDB(db_path, db_path)) {
+      err("failed to open db\n");
+      return -1;
+    }
   }
 
   char tmpbuf[10000];
   int tsize = 1000;
+  rocksdb::Status status;
   if (single_write) {
     arc4random_buf(tmpbuf, tsize);
-    shard.Put(single_write_key.c_str(),
-              single_write_key.size(),
-              tmpbuf,
-              tsize);
+    status = shard.Put(single_write_key.c_str(),
+                       single_write_key.size(),
+                       tmpbuf,
+                       tsize);
+    printf("write key %s, %s\n",
+           single_write_key.c_str(),
+           status.ok() ? "success" : "failed");
   }
   if (single_read) {
     string value;
-    shard.Get(single_read_key, &value);
-    printf("read return: \"%s\", size %ld\n",
-           value.c_str(), value.size());
+    status = shard.Get(single_read_key, &value);
+    printf("read key %s, stat = %s,  return size  %ld\n",
+           single_read_key.c_str(),
+           status.ToString().c_str(),
+           value.size());
   }
+
   if (single_write || single_read) {
+    shard.CloseDB();
     return 0;
   }
 
@@ -530,18 +627,23 @@ int main(int argc, char** argv) {
   int lowest = 1;
   int highest = 100000000;
   int sig_digits = 3;
-  hdr_init(lowest, highest, sig_digits, &histo_read);
-  hdr_init(lowest, highest, sig_digits, &histo_write);
+  hdr_init(lowest, highest, sig_digits, &read_histo);
+  hdr_init(lowest, highest, sig_digits, &write_histo);
   printf("memory footprint of hdr-histogram: %ld\n",
-         hdr_get_memory_size(histo_read));
+         hdr_get_memory_size(read_histo));
 
-  // Populate db with these many objs.
+
+  //////////////////
+  // Populate db upfront.
+
+  vector<std::thread> workers;
   vector<TaskContext> tasks(num_threads);
 
   for (int i = 0; i < num_threads; i++) {
     memset(&tasks[i], 0, sizeof(TaskContext));
 
     tasks[i].id = i;
+    tasks[i].init_num_objs = init_num_objs / num_threads;
     tasks[i].target_qps = total_target_qps / num_threads;
     tasks[i].write_ratio = write_ratio;
     tasks[i].runtime_usec = runtime_sec * 1000000L;
@@ -549,17 +651,13 @@ int main(int argc, char** argv) {
     sem_init(&tasks[i].sem_begin, 0, 0);
     sem_init(&tasks[i].sem_end, 0, 0);
 
-    //tasks[i].db = db;
-    //tasks[i].db_iface = &iface;
-    //tasks[i].write_options = write_options;
-    //tasks[i].read_options = read_options;
-
-    tasks[i].output_lock = &outputLock;
+    tasks[i].db = &shard;
 
     workers.push_back(std::thread(Worker, &tasks[i]));
   }
 
 
+  ////////////////
   // Create timer.
   timer_t timer;
   TimerContext tctx;
@@ -571,81 +669,104 @@ int main(int argc, char** argv) {
 
   CreateTimer(&timer, timer_cycle_sec * 1000, TimerCallback, &tctx);
 
-
-#if 0
-  unsigned long t1, t2, time_total;
-  if (do_write) {
-    printf("Main: will start write phase...\n");
-    t1 = time_microsec();
-    // start worker to write.
-    for (int i = 0; i < num_tasks; i++) {
-      sem_post(&tasks[i].sem_begin);
+  ///////////////////
+  // Phase 1: populate the DB with data.
+  if (overwrite_all) {
+    if (!shard.OpenForBulkLoad(db_path)) {
+      err("failed to open DB for overwrite: %s\n", db_path.c_str());
+      return -1;
     }
-    // wait for write to finish.
-    for (int i = 0; i < num_tasks; i++) {
-      sem_wait(&tasks[i].sem_end);
+    printf("\nStart overwrite phase...\n");
+    for (auto& task : tasks) {
+      sem_post(&task.sem_begin);
     }
-    time_total = time_microsec() - t1;
-
-    // output stats
-    sort(write_latency, write_latency + write_obj_count);
-    printf("Overall write IOPS = %f\n", write_obj_count / (time_total / 1000000.0));
-    PrintStats(write_latency, write_obj_count, "\nOverall write latency in ms");
-    printf("\nwait for background activities to settle...\n");
-    sleep(3);
-    printf("\ntable-cache memory usage after write: %ld\n",
-           GetMemoryUsage(&iface));
+    for (auto& task : tasks) {
+      sem_wait(&task.sem_end);
+    }
+    printf("\nfinished overwrite\n");
+    shard.CloseDB();
   }
 
-  // start worker to read.
-  if (do_read) {
-    // Warm up phase.
-    printf("\n\nMain: warm up read...\n");
-    for (int i = 0; i < num_tasks; i++) {
-      sem_post(&tasks[i].sem_begin);
-    }
-    // wait for read to finish.
-    for (int i = 0; i < num_tasks; i++) {
-      sem_wait(&tasks[i].sem_end);
-    }
-
-    printf("\ntable-cache memory usage after warmup-read: %ld\n",
-           GetMemoryUsage(&iface));
-
-    printf("\n\nMain: will start read phase...\n");
-
-    t1 = time_microsec();
-    for (int i = 0; i < num_tasks; i++) {
-      sem_post(&tasks[i].sem_begin);
-    }
-    // wait for read to finish.
-    for (int i = 0; i < num_tasks; i++) {
-      sem_wait(&tasks[i].sem_end);
-    }
-    time_total = time_microsec() - t1;
-    printf("\ntable-cache memory usage after read: %ld\n",
-           GetMemoryUsage(&iface));
+  ////////////////
+  // Phase 2: run r/w workload.
+  if (!shard.OpenDB(db_path, db_path)) {
+    err("failed to open db before running workload\n");
+    return -1;
   }
 
-  // output stats
-  if (do_read) {
-    sort(read_latency, read_latency + read_obj_count);
-    printf("Overall read IOPS = %f\n", read_obj_count / (time_total / 1000000.0));
-    PrintStats(read_latency, read_obj_count, "\nOverall read latency in ms");
+  // Now do a compaction.
+  printf("before compaction\n");
+  shard.CompactRange(nullptr, nullptr);
+  printf("after compaction\n");
+
+  printf("\nStart workload ...\n");
+
+  uint64_t tstart = NowInUsec();
+
+  for (auto& task : tasks) {
+    sem_post(&task.sem_begin);
+  }
+  for (auto& task : tasks) {
+    sem_wait(&task.sem_end);
   }
 
-#endif
+  printf("\nFinished workload\n");
 
-  int i = 0;
-  for (auto& th : workers) {
-    if (th.joinable()) {
-      th.join();
-      printf("joined thread %d\n", i++);
+  DeleteTimer(&timer);
+
+  ///////////////////////
+  // Count stats.
+  uint64_t readBytes = 0, writeBytes = 0;
+  uint64_t readFail = 0, readMiss = 0;
+  uint64_t totalOps = 0, writeFail = 0;
+  uint64_t totalReadOps = 0, totalWriteOps = 0;
+  for (int i = 0; i < num_threads; i++) {
+    if (workers[i].joinable()) {
+      workers[i].join();
+      printf("joined thread %d\n", i);
     }
+    if (overwrite_all) {
+      tasks[i].num_writes -= tasks[i].init_num_objs;
+    }
+    readBytes += tasks[i].read_bytes;
+    readMiss += tasks[i].read_miss;
+    readFail += tasks[i].read_failure;
+    totalReadOps += tasks[i].num_reads;
+
+    writeBytes += tasks[i].write_bytes;
+    writeFail += tasks[i].write_failure;
+    totalWriteOps += tasks[i].num_writes;
+
+    totalOps += tasks[i].num_reads;
+    totalOps += tasks[i].num_writes;
   }
 
-  free(histo_read);
-  free(histo_write);
+  double totalSecs = (NowInUsec() - tstart) / 1000000.0;
+
+  printf("\nIn total:  %ld ops in %f sec (%ld read, %ld write).\n"
+         "Total IOPS = %.f, read IOPS %.f, write IOPS %.f\n"
+         "Bandwidth = %.3f MB/s, read bw %.3f MB/s, write bw %.3f MB/s\n"
+         "Read miss %ld (%.2f%%), read failure %ld, write failure %ld\n",
+         totalOps, totalSecs, totalReadOps, totalWriteOps,
+         totalOps / totalSecs,
+         totalReadOps / totalSecs, totalWriteOps / totalSecs,
+         (readBytes + writeBytes) / totalSecs / 1000000,
+         readBytes / totalSecs / 1000000,
+         writeBytes / totalSecs / 1000000,
+         readMiss,
+         (readMiss + 0.0) / totalReadOps * 100,
+         readFail,
+         writeFail);
+
+  if (count_latency) {
+    PrintHistoStats(read_histo, "\n============== Read latency in ms");
+    PrintHistoStats(write_histo, "\n============== Write latency in ms");
+  }
+
+  ////////////////////
+  // clearn up.
+  free(read_histo);
+  free(write_histo);
   return 0;
 }
 

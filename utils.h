@@ -9,11 +9,12 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #include <unistd.h>
-
 #include <vector>
-#include <string>
 
+#include <ctime>
+#include <string>
 using namespace std;
 
 // A class to do inter-task sync.
@@ -56,7 +57,6 @@ class TaskSync {
 };
 
 vector<char*> SplitString(char *input, const char *delimiters);
-vector<string> SplitString(string input, const char *delimiter);
 
 unsigned long NowInUsec();
 
@@ -112,7 +112,6 @@ void BindThread2CPU(pthread_t tid,
 
 void SetRealTimePriority(pthread_t tid);
 
-
 int CreateTimer(timer_t *tm,
                 int millisec,
                 void (*callback)(union sigval),
@@ -120,7 +119,12 @@ int CreateTimer(timer_t *tm,
 
 void DeleteTimer(timer_t *tm);
 
+void EncodeBuffer(char *buf, int buflen);
 
-std::string TimestampString();
+bool DecodeBuffer(char *buf, int buflen);
+
+string TimestampString();
+
+extern uint64_t start_time_epoch;
 
 #endif  // __UTILS_H__
