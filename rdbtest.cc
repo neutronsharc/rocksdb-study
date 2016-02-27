@@ -247,7 +247,6 @@ static void Worker(TaskContext *task) {
         task->write_failure++;
       } else {
         task->num_writes++;
-        task->write_bytes += objsize;
       }
     }
     sem_post(&task->sem_end);
