@@ -49,7 +49,7 @@ min   10 %   20 %    50 %    90 %    95 %   99 %      99.9 %         max
 
 ```
 
-## 99% read, 1% write (most data in disk)
+## 99% read, 1% write (120 GB data > memory 60 GB)
 
 
 ```
@@ -70,7 +70,7 @@ Bandwidth = 106.579 MB/s, read bw 105.509 MB/s, write bw 1.070 MB/s
 
 ```
 
-## 90% read, 10% write (most data in disk)
+## 90% read, 10% write (120 GB data > memory 60 GB)
 
 
 ```
@@ -92,3 +92,22 @@ Read miss 0 (0.00%), read failure 0, write failure 0
 
 ```
 
+## 100% read (120 GB data > memory 60 GB)
+
+```
+./rdbtest -p /data/nvme0/rdbtest/ -n 30000000 -t 8 -q 800000 -l -w 0 -i 300 -s 4000
+
+
+In total:  8524935 ops in 300.005101 sec (8524935 read, 0 write).
+Total IOPS = 28416, read IOPS 28416, write IOPS 0
+Bandwidth = 113.664 MB/s, read bw 113.664 MB/s, write bw 0.000 MB/s
+Read miss 0 (0.00%), read failure 0, write failure 0
+
+============== Read latency in ms
+         min        10 %        20 %        50 %        90 %        95 %        99 %      99.9 %         max
+       0.005       0.015       0.019       0.227       0.503       0.615       2.847       5.303     257.919
+
+============== Write latency in ms
+         min        10 %        20 %        50 %        90 %        95 %        99 %      99.9 %         max
+           0           0           0           0           0           0           0           0           0
+```
