@@ -146,7 +146,8 @@ bool RocksDBShard::OpenDB(const std::string& path,
   }
 
   // Compaction params.
-  options_.disable_auto_compactions = false;
+  //options_.disable_auto_compactions = false;
+  options_.disable_auto_compactions = true;
   options_.max_background_compactions = bkgnd_threads - max_bkgnd_flushes;
   options_.target_file_size_base = 128 * MB;
   options_.target_file_size_multiplier = 1;
@@ -176,6 +177,20 @@ void RocksDBShard::CloseDB() {
     dbg("will close rocksdb at %s\n", db_path_.c_str());
     delete db_;
     db_ = nullptr;
+  }
+}
+
+bool RocksDBShard::SetAutoCompaction(bool enable) {
+  std::unordered_map<std::string, std::string> opt;
+  opt["disable_auto_compactions"] = enable ? "false" : "true";
+
+  rocksdb::Status status = db_->SetOptions(db_->DefaultColumnFamily(), opt);
+  if (status.ok()) {
+    return true;
+  } else {
+    err("failed to set auto-compaction to %s: %s\n",
+        enable ? "on" : "off", status.ToString().c_str());
+    return false;
   }
 }
 

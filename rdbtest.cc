@@ -163,11 +163,16 @@ static struct hdr_histogram *write_histo = NULL;
 
 
 static void TimerCallback(union sigval sv) {
+  static uint64_t cnt = 0;
   TimerContext *tc = (TimerContext*)sv.sival_ptr;
 
   vector<TaskContext>& tasks = *tc->tasks;
   int ntasks = tc->ntasks;
   //printf("in timer callback: %d tasks, task ctx %p\n", ntasks, tasks);
+  if (cnt++ == 30) {
+    //bool ret = tasks[0].db->SetAutoCompaction(true);
+    //dbg("enable auto compaction: %s\n", ret ? "success" : "failed");
+  }
 
   OpStats last_stats;
   memcpy(&last_stats, &tc->stats, sizeof(OpStats));
@@ -605,6 +610,8 @@ int main(int argc, char** argv) {
   rocksdb::Status status;
   if (single_write) {
     arc4random_buf(tmpbuf, tsize);
+    sprintf(tmpbuf, "value1");
+    tsize = strlen(tmpbuf);
     status = shard.Put(single_write_key.c_str(),
                        single_write_key.size(),
                        tmpbuf,

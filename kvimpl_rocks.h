@@ -99,6 +99,8 @@ class RocksDBShard {
               CompactionStyle cstyle,
               rocksdb::Env* env);
 
+  bool SetAutoCompaction(bool enable);
+
   void CloseDB();
 
   rocksdb::Status Put(const char* key, int klen, const char* value, int vlen);
