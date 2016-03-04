@@ -1,6 +1,23 @@
 # rocksdb-study
 study rocks db performance
 
+# build rocksdb
+
+Build with release mode: `make static_lib `.  The following flags will be used:
+```
+OPT = -O2 -fno-omit-frame-pointer -momit-leaf-frame-pointer,
+CFLAGS =  -g -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Werror -I. -I./include -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX  -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DSNAPPY -DGFLAGS=google -DZLIB -DBZIP2 -DROCKSDB_MALLOC_USABLE_SIZE -march=native   -isystem ./third-party/gtest-1.7.0/fused-src -O2 -fno-omit-frame-pointer -momit-leaf-frame-pointer,
+CXXFLAGS =  -g -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Werror -I. -I./include -std=c++11  -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX  -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DSNAPPY -DGFLAGS=google -DZLIB -DBZIP2 -DROCKSDB_MALLOC_USABLE_SIZE -march=native   -isystem ./third-party/gtest-1.7.0/fused-src -O2 -fno-omit-frame-pointer -momit-leaf-frame-pointer -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers,
+LDFLAGS =  -lpthread -lrt -lsnappy -lgflags -lz -lbz2 -ljemalloc
+```
+
+Build with dbg mode:  `make dbg`.  The following flags will be used:
+```
+OPT = ,
+CFLAGS =  -g -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Werror -I. -I./include -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX  -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DSNAPPY -DGFLAGS=google -DZLIB -DBZIP2 -DROCKSDB_MALLOC_USABLE_SIZE -march=native   -isystem ./third-party/gtest-1.7.0/fused-src ,
+CXXFLAGS =  -g -W -Wextra -Wall -Wsign-compare -Wshadow -Wno-unused-parameter -Werror -I. -I./include -std=c++11  -DROCKSDB_PLATFORM_POSIX -DROCKSDB_LIB_IO_POSIX  -DOS_LINUX -fno-builtin-memcmp -DROCKSDB_FALLOCATE_PRESENT -DSNAPPY -DGFLAGS=google -DZLIB -DBZIP2 -DROCKSDB_MALLOC_USABLE_SIZE -march=native   -isystem ./third-party/gtest-1.7.0/fused-src  -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers,
+LDFLAGS =  -lpthread -lrt -lsnappy -lgflags -lz -lbz2 -ljemalloc
+```
 
 # RocksDB performance
 
