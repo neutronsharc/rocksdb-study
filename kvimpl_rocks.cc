@@ -68,7 +68,7 @@ bool RocksDBShard::OpenForBulkLoad(const string& path) {
   options_.write_buffer_size = 64 * MB;
   options_.max_write_buffer_number = 32;
   options_.min_write_buffer_number_to_merge = 2;
-  options_.allow_os_buffer = false;
+  //options_.allow_os_buffer = false;
 
   options_.create_if_missing = true;
   options_.create_missing_column_families = true;
@@ -78,6 +78,7 @@ bool RocksDBShard::OpenForBulkLoad(const string& path) {
   rocksdb::BlockBasedTableOptions blk_options;
   blk_options.block_size = 1024L * 8;
   uint64_t blk_cache_size = 128 * MB;
+  blk_options.cache_index_and_filter_blocks = true;
   blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
   blk_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
   options_.table_factory.reset(rocksdb::NewBlockBasedTableFactory(blk_options));
@@ -104,6 +105,7 @@ bool RocksDBShard::OpenDB(const std::string& path,
   int bkgnd_threads = 12;
   int max_bkgnd_flushes = 2;
   uint64_t MB = 1024L * 1024;
+  uint64_t GB = 1024L * 1024 * 1024;
 
   db_path_ = path;
 
@@ -119,7 +121,8 @@ bool RocksDBShard::OpenDB(const std::string& path,
   // Block table params.
   rocksdb::BlockBasedTableOptions blk_options;
   blk_options.block_size = 1024L * 8;
-  uint64_t blk_cache_size = 1024L * MB;
+  uint64_t blk_cache_size = 1000 * MB;
+  blk_options.cache_index_and_filter_blocks = true;
   blk_options.block_cache = rocksdb::NewLRUCache(blk_cache_size, 6);
   blk_options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, false));
 
@@ -136,6 +139,7 @@ bool RocksDBShard::OpenDB(const std::string& path,
   options_.use_fsync = false;
   options_.allow_mmap_reads = true;
   options_.allow_mmap_writes = false;
+  options_.allow_os_buffer = true;
 
   // WAL log.
   wal_path_ = wal_path;
@@ -144,6 +148,8 @@ bool RocksDBShard::OpenDB(const std::string& path,
   } else {
     disable_wal_ = true;
   }
+  options_.WAL_ttl_seconds = 3600 * 10;
+  options_.WAL_size_limit_MB = 100 * GB;
 
   // Compaction params.
   //options_.disable_auto_compactions = false;

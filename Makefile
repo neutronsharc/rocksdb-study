@@ -3,7 +3,7 @@ CXX = g++ -g -std=c++11
 ROCKSDB = /home/shawn/code/rocksdb-with-replication
 CFLAGS = -g -I${ROCKSDB}/include -I./hdr_histogram
 CXXFLAGS = -g -I${ROCKSDB}/include -gdwarf-3 -I./hdr_histogram
-LDFLAGS = -lpthread -lrt -lsnappy -lz -lbz2 -lbsd -lcrypto
+LDFLAGS = -L$(ROCKSDB) -lrocksdb_debug -lpthread -lrt -lsnappy -lz -lbz2 -lbsd -lcrypto
 
 .PHONY: clean
 
@@ -17,7 +17,7 @@ kvlib.a : $(objs) libhdrhistogram
 	ar crvs $@ $(objs)  hdr_histogram/lib_hdr_histogram.a
 
 rdbtest : rdbtest.o kvlib.a libhdrhistogram
-	g++ -std=c++11 -g rdbtest.o kvlib.a hdr_histogram/lib_hdr_histogram.a -o$@ -I$(ROCKSDB)/include $(ROCKSDB)/librocksdb.a $(LDFLAGS)
+	g++ -std=c++11 -g rdbtest.o kvlib.a hdr_histogram/lib_hdr_histogram.a -o$@ $(LDFLAGS)
 
 libhdrhistogram : force_look
 	cd hdr_histogram; $(MAKE) $(MFLAGS)

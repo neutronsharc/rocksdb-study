@@ -698,7 +698,6 @@ int main(int argc, char** argv) {
     for (auto& task : tasks) {
       sem_wait(&task.sem_end);
     }
-    shard.CloseDB();
 
     uint64_t t2 = NowInUsec() - t1;
     double data_mb = init_num_objs * obj_sizes[0] / 1000000.0;
@@ -707,16 +706,17 @@ int main(int argc, char** argv) {
            data_mb,
            t2 / 1000000.0,
            data_mb * 1000000 / t2);
-    // Now do a compaction.
-    printf("%s: will compact after bulk load...\n",
+    printf("%s: will run compaction after bulkload...\n",
            TimestampString().c_str());
     shard.Compact();
-    printf("%s: finished compaction after bulk load.",
+    printf("%s: compaction finished.\n",
            TimestampString().c_str());
+    shard.CloseDB();
   }
 
   ////////////////
   // Phase 2: run r/w workload.
+  dbg("open db for workload...\n");
   if (!shard.OpenDB(db_path, db_path)) {
     err("failed to open db before running workload\n");
     return -1;
