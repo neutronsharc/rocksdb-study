@@ -85,7 +85,7 @@ bool RocksDBShard::OpenForBulkLoad(const string& path) {
 
   rocksdb::Status status;
   logger_.reset(new RocksDBLogger());
-  options_.Dump(logger_.get());
+  //options_.Dump(logger_.get());
 
   // NOTE:: Below code will re-direct all RDB logs to stdout.
   //options_.info_log = logger_;
@@ -169,7 +169,7 @@ bool RocksDBShard::OpenDB(const std::string& path,
   stats_ = rocksdb::CreateDBStatistics();
 
   logger_.reset(new RocksDBLogger());
-  options_.Dump(logger_.get());
+  //options_.Dump(logger_.get());
 
   // NOTE:: Below code will re-direct all RDB logs to stdout.
   //options_.info_log = logger_;
@@ -243,6 +243,44 @@ rocksdb::Status RocksDBShard::Get(const string& key, string* value) {
   return status;
 }
 
+
+bool RocksDBShard::CreateCheckpoint(const string& path) {
+  rocksdb::Checkpoint *ckpt;
+  rocksdb::Status status = rocksdb::Checkpoint::Create(db_, &ckpt);
+  assert(status.ok());
+
+  uint64_t seq1 = LatestSequenceNumber();
+  status = ckpt->CreateCheckpoint(path);
+  assert(status.ok());
+  uint64_t seq2 = LatestSequenceNumber();
+
+  ckpt_paths_.push_back(path);
+  sequences_.push_back(seq1);
+  dbg("created ckpt %s, before-seq = %ld, after-seq = %ld\n",
+      path.c_str(), seq1, seq2);
+
+  // get list of files in the checkpoint.
+
+  std::vector<string> files;
+  uint64_t size;
+
+  status = db_->GetLiveFiles(files, &size);
+  assert(status.ok());
+  printf("ckpt %s has %ld files, size %ld:\n",
+         path.c_str(), files.size(), size);
+  for (auto& s: files) {
+    printf("\t%s\n", s.c_str());
+  }
+  delete ckpt;
+  return true;
+}
+
+
+/////////////////////////////////////////////////////
+/////////////////////////////////////////////////////
+/////////////////////////////////////////////////////
+//    obsolete
+//
 bool RocksDBShard::OpenDB(const std::string& dbPath,
                           int blockCacheMB,
                           CompactionStyle cstyle,

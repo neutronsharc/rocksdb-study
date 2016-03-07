@@ -20,6 +20,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/options.h"
+#include "rocksdb/utilities/checkpoint.h"
 
 #include "kvinterface.h"
 #include "kvstore.h"
@@ -107,6 +108,36 @@ class RocksDBShard {
 
   rocksdb::Status Get(const string& key, string* value);
 
+  // Create a checkpoint in given dir.
+  bool CreateCheckpoint(const string& path);
+
+  static void DestroyDB(const string& path) {
+    rocksdb::Options opt;
+    opt.create_if_missing = true;
+    rocksdb::DestroyDB(path, opt);
+  }
+
+  uint64_t LatestSequenceNumber() {
+    return db_->GetLatestSequenceNumber();
+  }
+  /////////////////////
+  std::shared_ptr<RocksDBLogger> logger_;
+  string db_path_;
+  string wal_path_;
+  bool disable_wal_;
+  rocksdb::DB* db_;
+  rocksdb::Options options_;
+  std::shared_ptr<rocksdb::Statistics> stats_;
+
+  rocksdb::WriteOptions write_options_;
+  rocksdb::ReadOptions read_options_;
+
+  // a list of ckpt paths, one checkpoint in each path.
+  std::vector<string> ckpt_paths_;
+  // sequence no. for each ckpt.
+  std::vector<uint64_t> sequences_;
+
+  /////////////////////////
   // Obsolete.
   bool Get(KVRequest*  p);
 
@@ -124,18 +155,6 @@ class RocksDBShard {
 
   uint64_t GetMemoryUsage();
 
-  /////////////////////
-
-  std::shared_ptr<RocksDBLogger> logger_;
-  string db_path_;
-  string wal_path_;
-  bool disable_wal_;
-  rocksdb::DB* db_;
-  rocksdb::Options options_;
-  std::shared_ptr<rocksdb::Statistics> stats_;
-
-  rocksdb::WriteOptions write_options_;
-  rocksdb::ReadOptions read_options_;
 };
 
 

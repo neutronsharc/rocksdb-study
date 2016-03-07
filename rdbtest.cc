@@ -168,12 +168,17 @@ static void TimerCallback(union sigval sv) {
 
   vector<TaskContext>& tasks = *tc->tasks;
   int ntasks = tc->ntasks;
-  //printf("in timer callback: %d tasks, task ctx %p\n", ntasks, tasks);
-  if (cnt++ == 30) {
-    //bool ret = tasks[0].db->SetAutoCompaction(true);
-    //dbg("enable auto compaction: %s\n", ret ? "success" : "failed");
+
+  /////////////////////////
+  /// Create a checkpoint
+  if (++cnt > 10 ) {
+    string ckpt_path = db_path;
+    ckpt_path.append("/ckpt-").append(std::to_string(cnt));
+    dbg("will create ckpt %ld at %s\n", cnt, ckpt_path.c_str());
+    tasks[0].db->CreateCheckpoint(ckpt_path);
   }
 
+  ///////////////////////
   OpStats last_stats;
   memcpy(&last_stats, &tc->stats, sizeof(OpStats));
   memset(&tc->stats, 0, sizeof(OpStats));
@@ -261,6 +266,7 @@ static void Worker(TaskContext *task) {
     dbg("Task %d: finished overwriting\n", task->id);
   }
 
+  // obj_id is the next obj key to write.
   uint64_t obj_id = task->init_num_objs;
   uint64_t ops = 0;
   uint64_t t1;
@@ -468,6 +474,33 @@ static void PrintHistoStats(struct hdr_histogram *histogram,
 }
 
 
+// Read from a checkpoint.
+static void ReadCheckpoint(string ckpt_path, string key_base, uint64_t num_objs) {
+  RocksDBShard shard;
+  assert(shard.OpenDB(ckpt_path));
+  uint64_t sequence = shard.LatestSequenceNumber();
+
+  printf("checkpoint %s, latest seq # %ld\n", ckpt_path.c_str(), sequence);
+
+  uint64_t misses = 0, hits = 0, errors = 0;
+  for (int i = 0; i < num_objs; i++) {
+    string key = key_base;
+    key.append(std::to_string(i));
+    string value;
+    rocksdb::Status status = shard.Get(key, &value);
+    if (status.ok()) {
+      hits++;
+    } else {
+      err("miss/error at key: %s\n", key.c_str());
+      misses++;
+    }
+  }
+
+  printf("checkpoint %s, read %ld objs, hits %ld, misses %ld\n\n",
+         ckpt_path.c_str(), num_objs, hits, misses);
+
+}
+
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
@@ -484,12 +517,15 @@ void help() {
          "                       def = 1 key\n");
   printf("-x <key>             : write this key with random value of given size\n");
   printf("-y <key>             : read this key from DB\n");
+  printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-a                   : run compaction before workload starts. Def not\n");
   printf("-o                   : overwrite entire DB before test. Def not\n");
   printf("-h                   : this message\n");
+  printf("-X                   : destroy a checkpoint / db at path\n");
   //printf("-d <shards>          : number of shards. Def = 8\n");
 }
+
 
 int main(int argc, char** argv) {
   if (argc == 1) {
@@ -502,8 +538,10 @@ int main(int argc, char** argv) {
   bool single_read = false, single_write = false;
   string single_read_key, single_write_key;
   vector<char*> sizes;
+  bool checkpoint = false;
+  bool destroy_db = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:ohla")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:ohlakX")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -571,6 +609,13 @@ int main(int argc, char** argv) {
         count_latency = true;
         printf("Will count r/w latency\n");
         break;
+      case 'k':
+        checkpoint = true;
+        printf("test with checkpoint.\n");
+        break;
+      case 'X':
+        destroy_db = true;
+        break;
       case '?':
         help();
         return 0;
@@ -594,6 +639,17 @@ int main(int argc, char** argv) {
   procid = ::getpid();
 
   cout << "will run " << num_threads << " benchmark threads on DB " << db_path << endl;
+
+  if (checkpoint) {
+    ReadCheckpoint(db_path, "thr-0-key-", init_num_objs);
+    return 0;
+  }
+
+  if (destroy_db) {
+    printf("will destroy db %s\n", db_path.c_str());
+    RocksDBShard::DestroyDB(db_path);
+    return 0;
+  }
 
   RocksDBShard shard;
 
@@ -702,10 +758,17 @@ int main(int argc, char** argv) {
     uint64_t t2 = NowInUsec() - t1;
     double data_mb = init_num_objs * obj_sizes[0] / 1000000.0;
     printf("\nFinished overwrite, has written %.3f MB in %.3f sec, "
-           "bw = %.3f MB/s\n\n",
+           "bw = %.3f MB/s, latest sequence %ld\n\n",
            data_mb,
            t2 / 1000000.0,
-           data_mb * 1000000 / t2);
+           data_mb * 1000000 / t2,
+           shard.LatestSequenceNumber());
+
+    string ckpt_path = db_path;
+    ckpt_path.append("/ckpt-").append(std::to_string(0));
+    dbg("will create ckpt at %s\n", ckpt_path.c_str());
+    shard.CreateCheckpoint(ckpt_path);
+
     printf("%s: will run compaction after bulkload...\n",
            TimestampString().c_str());
     shard.Compact();
@@ -721,6 +784,7 @@ int main(int argc, char** argv) {
     err("failed to open db before running workload\n");
     return -1;
   }
+  printf("db path %s, latest sequence %ld\n", db_path.c_str(), shard.LatestSequenceNumber());
 
   // Now do a compaction.
   if (compact_before_workload) {
