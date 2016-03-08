@@ -254,23 +254,31 @@ bool RocksDBShard::CreateCheckpoint(const string& path) {
   assert(status.ok());
   uint64_t seq2 = LatestSequenceNumber();
 
-  ckpt_paths_.push_back(path);
-  sequences_.push_back(seq1);
-  dbg("created ckpt %s, before-seq = %ld, after-seq = %ld\n",
-      path.c_str(), seq1, seq2);
-
   // get list of files in the checkpoint.
+  rocksdb::DB* ckpt_db;
+  rocksdb::Options opt;
+  status = rocksdb::DB::Open(opt, path, &ckpt_db);
+  assert(status.ok());
+
+  uint64_t seq3 = ckpt_db->GetLatestSequenceNumber();
+  dbg("created ckpt %s, before-seq = %ld, after-seq = %ld, ckpt seq = %ld\n",
+      path.c_str(), seq1, seq2, seq3);
+
+  ckpt_paths_.push_back(path);
+  sequences_.push_back(seq3);
 
   std::vector<string> files;
   uint64_t size;
 
-  status = db_->GetLiveFiles(files, &size);
+  status = ckpt_db->GetLiveFiles(files, &size);
   assert(status.ok());
-  printf("ckpt %s has %ld files, size %ld:\n",
+  printf("ckpt %s has %ld files, manifest size %ld:\n",
          path.c_str(), files.size(), size);
   for (auto& s: files) {
     printf("\t%s\n", s.c_str());
   }
+
+  delete ckpt_db;
   delete ckpt;
   return true;
 }

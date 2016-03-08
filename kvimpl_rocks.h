@@ -120,6 +120,7 @@ class RocksDBShard {
   uint64_t LatestSequenceNumber() {
     return db_->GetLatestSequenceNumber();
   }
+
   /////////////////////
   std::shared_ptr<RocksDBLogger> logger_;
   string db_path_;
@@ -134,7 +135,7 @@ class RocksDBShard {
 
   // a list of ckpt paths, one checkpoint in each path.
   std::vector<string> ckpt_paths_;
-  // sequence no. for each ckpt.
+  // sequence no. of each ckpt.
   std::vector<uint64_t> sequences_;
 
   /////////////////////////
