@@ -38,7 +38,7 @@ bool RocksDBShard::OpenDBWithRetry(rocksdb::Options& opt,
   do {
     status = rocksdb::DB::Open(opt, path, db);
     if (status.ok()) {
-     return true;
+      return true;
     } else if (status.IsCorruption()) {
       err("db path corrupted: %s\n", path.c_str());
       status = rocksdb::RepairDB(path, opt);

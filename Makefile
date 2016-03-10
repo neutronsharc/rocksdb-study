@@ -4,6 +4,7 @@ ROCKSDB = /home/shawn/code/rocksdb-with-replication
 CFLAGS = -g -I${ROCKSDB}/include -I./hdr_histogram
 CXXFLAGS = -g -I${ROCKSDB}/include -gdwarf-3 -I./hdr_histogram
 LDFLAGS = -L$(ROCKSDB) -lrocksdb_debug -lpthread -lrt -lsnappy -lz -lbz2 -lbsd -lcrypto
+LDFLAGS += -lthrift -lboost_system
 
 .PHONY: clean
 

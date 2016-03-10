@@ -10,6 +10,7 @@
 #include <sched.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sstream>
 
 #include "utils.h"
 
@@ -99,6 +100,21 @@ vector<char*> SplitString(char *input, const char *delimiters) {
   return ss;
 }
 
+void SplitString(const string& input, const char delim, vector<string>& output) {
+  output.clear();
+
+  string::size_type i = 0;
+  string::size_type j = input.find(delim);
+
+  while (j != string::npos) {
+    output.push_back(input.substr(i, j-i));
+    i = ++j;
+    j = input.find(delim, j);
+    if (j == string::npos) {
+      output.push_back(input.substr(i, input.length()));
+    }
+  }
+}
 
 
 // Convert a string in form of 123K/M/G to its decimal value.

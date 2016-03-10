@@ -58,6 +58,8 @@ class TaskSync {
 
 vector<char*> SplitString(char *input, const char *delimiters);
 
+void SplitString(const string& input, const char delim, vector<string>& output);
+
 unsigned long NowInUsec();
 
 unsigned long NowInSec();

@@ -121,6 +121,19 @@ class RocksDBShard {
     return db_->GetLatestSequenceNumber();
   }
 
+  rocksdb::Status InitReplicator(const std::string& address, int port) {
+    return db_->InitReplicator(address, port);
+  }
+
+  rocksdb::Status ConnectUpstream(const string& addr, int port) {
+    return db_->ConnectUpstream(addr, port);
+  }
+
+  rocksdb::Status ConnectDownstream(const string& addr, int port) {
+    return rocksdb::Status::OK();
+  }
+
+
   /////////////////////
   std::shared_ptr<RocksDBLogger> logger_;
   string db_path_;

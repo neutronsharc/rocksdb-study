@@ -161,6 +161,14 @@ static pthread_mutex_t write_histo_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct hdr_histogram *read_histo = NULL;
 static struct hdr_histogram *write_histo = NULL;
 
+static std::string rpc_addr;
+static int rpc_port;
+
+static std::string upstream_addr;
+static int upstream_port;
+
+static std::string downstream_addr;
+static int downstream_port;
 
 static void TimerCallback(union sigval sv) {
   static uint64_t cnt = 0;
@@ -172,10 +180,10 @@ static void TimerCallback(union sigval sv) {
   /////////////////////////
   /// Create a checkpoint
   if (++cnt > 10 ) {
-    string ckpt_path = db_path;
-    ckpt_path.append("/ckpt-").append(std::to_string(cnt));
-    dbg("will create ckpt %ld at %s\n", cnt, ckpt_path.c_str());
-    tasks[0].db->CreateCheckpoint(ckpt_path);
+    //string ckpt_path = db_path;
+    //ckpt_path.append("/ckpt-").append(std::to_string(cnt));
+    //dbg("will create ckpt %ld at %s\n", cnt, ckpt_path.c_str());
+    //tasks[0].db->CreateCheckpoint(ckpt_path);
   }
 
   ///////////////////////
@@ -517,6 +525,9 @@ void help() {
          "                       def = 1 key\n");
   printf("-x <key>             : write this key with random value of given size\n");
   printf("-y <key>             : read this key from DB\n");
+  printf("-U <address:port>    : upstream RPC address:port\n");
+  printf("-D <address:port>    : downstream RPC address:port\n");
+  printf("-R <address:port>    : local RPC address:port\n");
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-a                   : run compaction before workload starts. Def not\n");
@@ -538,10 +549,11 @@ int main(int argc, char** argv) {
   bool single_read = false, single_write = false;
   string single_read_key, single_write_key;
   vector<char*> sizes;
+  std::vector<std::string> ss;
   bool checkpoint = false;
   bool destroy_db = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:ohlakX")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:R:ohlakX")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -612,6 +624,26 @@ int main(int argc, char** argv) {
       case 'k':
         checkpoint = true;
         printf("test with checkpoint.\n");
+        break;
+      case 'U':
+        SplitString(std::string(optarg), ':', ss);
+        upstream_addr = ss[0];
+        upstream_port = atoi(ss[1].c_str());
+        printf("will connect to upstream %s:%d\n",
+               upstream_addr.c_str(), upstream_port);
+        break;
+      case 'R':
+        SplitString(std::string(optarg), ':', ss);
+        rpc_addr = ss[0];
+        rpc_port = atoi(ss[1].c_str());
+        printf("will run RPC server at: %s:%d\n", rpc_addr.c_str(), rpc_port);
+        break;
+      case 'D':
+        SplitString(std::string(optarg), ':', ss);
+        downstream_addr = ss[0];
+        downstream_port = atoi(ss[1].c_str());
+        printf("will connect to downstream %s:%d\n",
+               downstream_addr.c_str(), downstream_port);
         break;
       case 'X':
         destroy_db = true;
@@ -764,6 +796,7 @@ int main(int argc, char** argv) {
            data_mb * 1000000 / t2,
            shard.LatestSequenceNumber());
 
+    /*
     string ckpt_path = db_path;
     ckpt_path.append("/ckpt-").append(std::to_string(0));
     dbg("will create ckpt at %s\n", ckpt_path.c_str());
@@ -774,6 +807,7 @@ int main(int argc, char** argv) {
     shard.Compact();
     printf("%s: compaction finished.\n",
            TimestampString().c_str());
+    */
     shard.CloseDB();
   }
 
@@ -785,6 +819,16 @@ int main(int argc, char** argv) {
     return -1;
   }
   printf("db path %s, latest sequence %ld\n", db_path.c_str(), shard.LatestSequenceNumber());
+
+  if (rpc_addr.size() > 0) {
+    status = shard.InitReplicator(rpc_addr, rpc_port);
+    dbg("start RPC server, ret = %s\n", status.ToString().c_str());
+  }
+
+  if (upstream_addr.size() > 0) {
+    status = shard.ConnectUpstream(upstream_addr, upstream_port);
+    dbg("connect to upstream, ret = %s\n", status.ToString().c_str());
+  }
 
   // Now do a compaction.
   if (compact_before_workload) {
