@@ -814,13 +814,14 @@ int main(int argc, char** argv) {
     ckpt_path.append("/ckpt-").append(std::to_string(0));
     dbg("will create ckpt at %s\n", ckpt_path.c_str());
     shard.CreateCheckpoint(ckpt_path);
+    */
 
     printf("%s: will run compaction after bulkload...\n",
            TimestampString().c_str());
     shard.Compact();
     printf("%s: compaction finished.\n",
            TimestampString().c_str());
-    */
+
     shard.CloseDB();
   }
 
@@ -833,16 +834,6 @@ int main(int argc, char** argv) {
   }
   printf("db path %s, latest sequence %ld\n", db_path.c_str(), shard.LatestSequenceNumber());
 
-  if (rpc_addr.size() > 0) {
-    status = shard.InitReplicator(rpc_addr, rpc_port);
-    dbg("start RPC server, ret = %s\n", status.ToString().c_str());
-  }
-
-  if (upstream_addr.size() > 0) {
-    status = shard.ConnectUpstream(upstream_addr, upstream_port);
-    dbg("connect to upstream, ret = %s\n", status.ToString().c_str());
-  }
-
   // Now do a compaction.
   if (compact_before_workload) {
     printf("%s: will run compaction before workload...\n",
@@ -852,6 +843,11 @@ int main(int argc, char** argv) {
            TimestampString().c_str());
   }
 
+  if (rpc_addr.size() > 0) {
+    status = shard.InitReplicator(rpc_addr, rpc_port);
+    dbg("start RPC server, ret = %s\n", status.ToString().c_str());
+  }
+
   printf("\nStart workload ...\n");
 
   uint64_t tstart = NowInUsec();
@@ -859,6 +855,16 @@ int main(int argc, char** argv) {
   for (auto& task : tasks) {
     sem_post(&task.sem_begin);
   }
+
+  if (upstream_addr.size() > 0) {
+    status = shard.ConnectUpstream(upstream_addr, upstream_port);
+    dbg("connect to upstream, ret = %s\n", status.ToString().c_str());
+  }
+  if (downstream_addr.size() > 0) {
+    status = shard.ConnectDownstream(downstream_addr, downstream_port);
+    dbg("connect to downstream, ret = %s\n", status.ToString().c_str());
+  }
+
   for (auto& task : tasks) {
     sem_wait(&task.sem_end);
   }

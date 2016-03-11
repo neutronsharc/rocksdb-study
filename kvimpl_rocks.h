@@ -130,7 +130,7 @@ class RocksDBShard {
   }
 
   rocksdb::Status ConnectDownstream(const string& addr, int port) {
-    return rocksdb::Status::OK();
+    return db_->ConnectDownstream(addr, port);
   }
 
 
