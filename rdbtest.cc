@@ -170,6 +170,8 @@ static int upstream_port;
 static std::string downstream_addr;
 static int downstream_port;
 
+static bool use_bulk_load = false;
+
 static void TimerCallback(union sigval sv) {
   static uint64_t cnt = 0;
   TimerContext *tc = (TimerContext*)sv.sival_ptr;
@@ -531,6 +533,7 @@ void help() {
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-a                   : run compaction before workload starts. Def not\n");
+  printf("-B                   : when populating data, use bulk load mode (disable WAL). Def not\n");
   printf("-o                   : overwrite entire DB before test. Def not\n");
   printf("-h                   : this message\n");
   printf("-X                   : destroy a checkpoint / db at path\n");
@@ -553,7 +556,7 @@ int main(int argc, char** argv) {
   bool checkpoint = false;
   bool destroy_db = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:R:ohlakX")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:R:ohlakXB")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -644,6 +647,10 @@ int main(int argc, char** argv) {
         downstream_port = atoi(ss[1].c_str());
         printf("will connect to downstream %s:%d\n",
                downstream_addr.c_str(), downstream_port);
+        break;
+      case 'B':
+        use_bulk_load = true;
+        printf("will use bulk-load mode when populating data\n");
         break;
       case 'X':
         destroy_db = true;
@@ -775,7 +782,13 @@ int main(int argc, char** argv) {
   // Phase 1: populate the DB with data.
   if (overwrite_all) {
     uint64_t t1 = NowInUsec();
-    if (!shard.OpenForBulkLoad(db_path)) {
+    bool ret;
+    if (use_bulk_load) {
+      ret = shard.OpenForBulkLoad(db_path);
+    } else {
+      ret = shard.OpenDB(db_path, db_path);
+    }
+    if (!ret) {
       err("failed to open DB for overwrite: %s\n", db_path.c_str());
       return -1;
     }
