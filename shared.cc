@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <thread>
 #include <sys/time.h>
@@ -173,7 +174,7 @@ class Worker {
            id_, ret ? "success" : "fail");
   }
 
- protected:
+ //protected:
 
   int running_;
   int id_;
@@ -206,8 +207,44 @@ void test(int did) {
   w2.AddDataLockfree(d);
 }
 
+std::unordered_map<int, std::shared_ptr<Worker> > wmap;
+
+void Test2() {
+  // test ref to unique_ptr
+  {
+    std::shared_ptr<Worker> w1(new Worker(3, true));;
+
+    std::shared_ptr<Worker>& ref_w1 = w1;
+
+    printf("1: w1 id %d\n", w1->id_);
+    printf("2: w1 ref id %d\n", ref_w1->id_);
+    //wmap[3] = std::move(w1);
+    wmap[3] = w1;
+    printf("3: w1 ref id %d\n", ref_w1->id_);
+    printf("4: w1 id %d\n", w1->id_);
+  }
+
+
+  {
+    auto it = wmap.find(3);
+    if (it != wmap.end()) {
+      std::shared_ptr<Worker> tw = std::move(it->second);
+      wmap.erase(it);
+    }
+  }
+
+  sleep(1);
+  printf("test 2 returned...\n");
+
+}
+
 // to build: g++ -std=c++11 -pthread ./shared.cc  -g -lboost_system
 int main(int argc, char** argv) {
+  Test2();
+  printf("after teset 2\n");
+  sleep(1);
+  printf("exit now\n");
+  return 0;
   test(11);
   test(12);
   test(13);

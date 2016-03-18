@@ -172,6 +172,8 @@ static int downstream_port;
 
 static bool use_bulk_load = false;
 
+static RocksDBShard shard;
+
 static void TimerCallback(union sigval sv) {
   static uint64_t cnt = 0;
   TimerContext *tc = (TimerContext*)sv.sival_ptr;
@@ -212,7 +214,7 @@ static void TimerCallback(union sigval sv) {
   }
 
   printf("%s: proc %d in past %d seconds:  %ld reads (%ld failure, %ld miss), "
-         "%ld writes (%ld failure), latest write # %ld\n",
+         "%ld writes (%ld failure), latest write # %ld, latest db seq# %ld\n",
          TimestampString().c_str(),
          procid,
          timer_cycle_sec,
@@ -221,7 +223,8 @@ static void TimerCallback(union sigval sv) {
          tc->stats.read_miss - last_stats.read_miss,
          tc->stats.writes - last_stats.writes,
          tc->stats.write_failure - last_stats.write_failure,
-         last_obj_id
+         last_obj_id,
+         shard.LatestSequenceNumber()
          );
 
 }
@@ -486,9 +489,9 @@ static void PrintHistoStats(struct hdr_histogram *histogram,
 
 // Read from a checkpoint.
 static void ReadCheckpoint(string ckpt_path, string key_base, uint64_t num_objs) {
-  RocksDBShard shard;
-  assert(shard.OpenDB(ckpt_path));
-  uint64_t sequence = shard.LatestSequenceNumber();
+  RocksDBShard sd;
+  assert(sd.OpenDB(ckpt_path));
+  uint64_t sequence = sd.LatestSequenceNumber();
 
   printf("checkpoint %s, latest seq # %ld\n", ckpt_path.c_str(), sequence);
 
@@ -497,7 +500,7 @@ static void ReadCheckpoint(string ckpt_path, string key_base, uint64_t num_objs)
     string key = key_base;
     key.append(std::to_string(i));
     string value;
-    rocksdb::Status status = shard.Get(key, &value);
+    rocksdb::Status status = sd.Get(key, &value);
     if (status.ok()) {
       hits++;
     } else {
@@ -529,7 +532,7 @@ void help() {
   printf("-y <key>             : read this key from DB\n");
   printf("-U <address:port>    : upstream RPC address:port\n");
   printf("-D <address:port>    : downstream RPC address:port\n");
-  printf("-R <address:port>    : local RPC address:port\n");
+  printf("-C <address:port>    : local RPC address:port\n");
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-a                   : run compaction before workload starts. Def not\n");
@@ -556,7 +559,7 @@ int main(int argc, char** argv) {
   bool checkpoint = false;
   bool destroy_db = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:R:ohlakXB")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:ohlakXB")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -635,7 +638,7 @@ int main(int argc, char** argv) {
         printf("will connect to upstream %s:%d\n",
                upstream_addr.c_str(), upstream_port);
         break;
-      case 'R':
+      case 'C':
         SplitString(std::string(optarg), ':', ss);
         rpc_addr = ss[0];
         rpc_port = atoi(ss[1].c_str());
@@ -690,7 +693,6 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  RocksDBShard shard;
 
   // Single-read  or single-write needs special care.
   if (single_write || single_read) {

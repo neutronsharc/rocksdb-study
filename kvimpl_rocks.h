@@ -26,6 +26,7 @@
 #include "kvstore.h"
 #include "multi_completion.h"
 #include "threadpool.h"
+#include "repl_types.h"
 
 using namespace std;
 
@@ -126,11 +127,12 @@ class RocksDBShard {
   }
 
   rocksdb::Status ConnectUpstream(const string& addr, int port) {
-    return db_->ConnectUpstream(addr, port);
+    //return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::SemiSync);
+    return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::Async);
   }
 
   rocksdb::Status ConnectDownstream(const string& addr, int port) {
-    return db_->ConnectDownstream(addr, port);
+    return db_->ConnectToDownstream(addr, port);
   }
 
 
