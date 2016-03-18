@@ -928,6 +928,7 @@ int main(int argc, char** argv) {
   // clearn up.
   free(read_histo);
   free(write_histo);
+  shard.CloseDB();
   return 0;
 }
 

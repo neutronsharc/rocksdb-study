@@ -124,15 +124,18 @@ class RocksDBShard {
 
   rocksdb::Status InitReplicator(const std::string& address, int port) {
     return db_->InitReplicator(address, port);
+    //return rocksdb::Status::OK();
   }
 
   rocksdb::Status ConnectUpstream(const string& addr, int port) {
     //return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::SemiSync);
     return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::Async);
+    //return rocksdb::Status::OK();
   }
 
   rocksdb::Status ConnectDownstream(const string& addr, int port) {
     return db_->ConnectToDownstream(addr, port);
+    //return rocksdb::Status::OK();
   }
 
 
