@@ -18,6 +18,14 @@
 #include <chrono>
 #include <ctime>
 
+#include <boost/archive/text_oarchive.hpp>
+#include <thrift/protocol/TBinaryProtocol.h>
+#include <thrift/server/TThreadPoolServer.h>
+#include <thrift/transport/TBufferTransports.h>
+#include <thrift/transport/TSocket.h>
+#include <thrift/transport/TServerSocket.h>
+#include <thrift/transport/TTransport.h>
+
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
 #include "rocksdb/slice.h"
@@ -28,10 +36,24 @@
 #include "kvimpl_rocks.h"
 #include "utils.h"
 #include "hdr_histogram.h"
+#include "replication/repl_types.h"
+#include "replication/gen-cpp/replication_types.h"
+#include "replication/gen-cpp/Replication.h"
 
 using namespace std;
-
 using namespace std::chrono;
+using namespace apache::thrift;
+using namespace apache::thrift::protocol;
+using namespace apache::thrift::transport;
+//using namespace ::apache::thrift::server;
+
+struct TaskContext;
+
+static int ReadbackCompare(char* key, TaskContext* ctx);
+
+static bool ConnectToRPC(const string& addr,
+                         int port,
+                         boost::shared_ptr<rocksdb::replication::ReplicationClient>& rpccli);
 
 static uint64_t GetRandom(uint64_t max_val) {
   return std::rand() % max_val;
@@ -75,6 +97,11 @@ struct TaskContext {
   sem_t sem_end;
 
   RocksDBShard *db;
+
+  std::mutex mtx_;
+  // replicated downstream rpc servers.
+  std::vector<boost::shared_ptr<rocksdb::replication::ReplicationClient> > repl_peers;
+  //std::vector<boost::shared_ptr<apache::thrift::transport::TTransport> > transports;
 
   /////////////////////
 
@@ -173,6 +200,40 @@ static int downstream_port;
 static bool use_bulk_load = false;
 
 static RocksDBShard shard;
+
+static vector<string> repl_ds_addresses;
+static vector<int> repl_ds_ports;
+
+class TestReplWatcher : public rocksdb::replication::ReplWatcher {
+ public:
+  TestReplWatcher(vector<TaskContext>& tasks) : tasks_(tasks) {}
+
+  virtual void OnDownstreamConnection(const std::string& addr, int port) {
+    printf("downstream %s:%d connection request...\n", addr.c_str(), port);
+    for (int i = 0; i < (int)tasks_.size(); i++) {
+      boost::shared_ptr<rocksdb::replication::ReplicationClient> rep;
+      bool ret = ConnectToRPC(addr, port, rep);
+      if (ret) {
+        printf("task %d has connected to remote RPC %s:%d\n", i, addr.c_str(), port);
+        std::unique_lock<std::mutex> lk(tasks_[i].mtx_);
+        tasks_[i].repl_peers.push_back(rep);
+        printf("task %d has added downstream peer %s:%d\n",
+               tasks_[i].id, addr.c_str(), port);
+      }
+    }
+    repl_ds_addresses.push_back(addr);
+    repl_ds_ports.push_back(port);
+  }
+
+  virtual void OnDownstreamTimeout(const std::string& addr, int port) {
+    printf("downstream %s:%d timeout\n", addr.c_str(), port);
+  }
+
+
+ private:
+  std::vector<TaskContext>& tasks_;
+};
+
 
 static void TimerCallback(union sigval sv) {
   static uint64_t cnt = 0;
@@ -273,6 +334,7 @@ static void Worker(TaskContext *task) {
         assert(0);
       } else {
         task->num_writes++;
+        ReadbackCompare(key, task);
       }
     }
     sem_post(&task->sem_end);
@@ -304,6 +366,7 @@ static void Worker(TaskContext *task) {
         AddWriteLatHisto(NowInUsec() - t1);
       }
       if (status.ok()) {
+        ReadbackCompare(key, task);
         task->num_writes++;
         task->write_bytes += objsize;
         obj_id++;
@@ -514,6 +577,113 @@ static void ReadCheckpoint(string ckpt_path, string key_base, uint64_t num_objs)
 
 }
 
+static bool ConnectToRPC(const string& addr,
+                         int port,
+                         boost::shared_ptr<rocksdb::replication::ReplicationClient>& rpccli) {
+  try {
+    boost::shared_ptr<TTransport> socket(new TSocket(addr, port));
+    boost::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
+    boost::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+    rpccli.reset(new rocksdb::replication::ReplicationClient(protocol));
+    transport->open();
+    return true;
+
+  } catch (const apache::thrift::transport::TTransportException& e) {
+    printf("****  remote RPC %s:%d: transport failure: %s\n", addr.c_str(), port, e.what());
+  } catch (const std::exception& e) {
+    printf("****  remote RPC %s:%d: generic failure: %s\n", addr.c_str(), port, e.what());
+  }
+  return false;
+}
+
+
+static int ReadFromRemote(boost::shared_ptr<rocksdb::replication::ReplicationClient>& rpccli,
+                          char* key,
+                          string& value) {
+  rocksdb::replication::RocksdbOpResponse response;
+  string skey(key);
+  int rv = -1;
+  try {
+    rpccli->Get(response, skey);
+    if (response.status.code == rocksdb::Status::kOk) {
+      value = response.data;
+    }
+    rv = response.status.code;
+  } catch (const apache::thrift::transport::TTransportException& e) {
+    printf("****  Read key %s from remote RPC: transport failure: %s\n", key, e.what());
+  } catch (const std::exception& e) {
+    printf("****  Read key %s from remote RPC: generic failure: %s\n", key, e.what());
+  }
+
+  return rv;
+}
+
+
+// Read the key back from local db and remote replication peers, compare the results.
+//
+// Return:
+//   0 if at least one peer matches with local data, false otherwise.
+//   1 if local read fails
+//   2 if no remote peers have the data
+//   3 if remote peers data mismtach with local data
+static int ReadbackCompare(char* key, TaskContext* ctx) {
+  if (ctx->repl_peers.size() == 0) return 0;
+
+  // read from replication peers.
+  int rv;
+  int remote_mismatch = 0;
+  int remote_miss = 0;
+  vector<string> remote_data;
+  vector<int> remote_result;
+
+  std::unique_lock<std::mutex> lk(ctx->mtx_);
+  for (int i = 0; i < ctx->repl_peers.size(); i++) {
+    boost::shared_ptr<rocksdb::replication::ReplicationClient>& rpccli = ctx->repl_peers[i];
+    string rd;
+    rv = ReadFromRemote(rpccli, key, rd);
+    remote_result.push_back(rv);
+    if (rv == rocksdb::Status::kOk) {
+      remote_data.push_back(rd);
+    } else {
+      //printf("key %s: remote peer %d:  data miss\n", key, i);
+      remote_data.push_back("");
+    }
+  }
+
+  // local read
+  string local_data;
+  rocksdb::Status status = ctx->db->Get(key, &local_data);
+  if (!status.ok()) {
+    dbg("key %s: local read failed\n", key);
+    return 1;
+  }
+
+  // Compare local read and remote read.
+  for (int i = 0; i < ctx->repl_peers.size(); i++) {
+    if (remote_result[i] == rocksdb::Status::kOk) {
+      if (local_data.compare(remote_data[i]) == 0) {
+        //printf("key %s: remote peer %d:  data match\n", key, i);
+        return 0;
+      } else {
+        remote_mismatch++;
+      }
+    } else {
+      remote_miss++;
+    }
+  }
+
+  dbg("key %s: remote peer has no data: miss = %d, mismatch = %d\n",
+      key, remote_miss, remote_mismatch);
+  if (remote_miss && !remote_mismatch) {
+    // remote don't have the data
+    return 2;
+  } else {
+    // remote data diffs
+    return 3;
+  }
+}
+
+
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
@@ -533,6 +703,8 @@ void help() {
   printf("-U <address:port>    : upstream RPC address:port\n");
   printf("-D <address:port>    : downstream RPC address:port\n");
   printf("-C <address:port>    : local RPC address:port\n");
+  printf("-E <address:port,address:port> : ',' separated list of replicaiton downstream peers\n"
+         "                       We will read back from these peers to verify replication success.\n");
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-a                   : run compaction before workload starts. Def not\n");
@@ -559,7 +731,7 @@ int main(int argc, char** argv) {
   bool checkpoint = false;
   bool destroy_db = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:ohlakXB")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:ohlakXB")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -638,6 +810,18 @@ int main(int argc, char** argv) {
         printf("will connect to upstream %s:%d\n",
                upstream_addr.c_str(), upstream_port);
         break;
+      case 'E':
+        SplitString(std::string(optarg), ',', ss);
+        for (auto& s : ss) {
+          printf("\treplication downstream peers: %s\n", s.c_str());
+          vector<string> tss;
+          SplitString(s, ':', tss);
+          assert(tss.size() == 2);
+          repl_ds_addresses.push_back(tss[0]);
+          repl_ds_ports.push_back(atoi(tss[1].c_str()));
+        }
+        break;
+
       case 'C':
         SplitString(std::string(optarg), ':', ss);
         rpc_addr = ss[0];
@@ -846,7 +1030,8 @@ int main(int argc, char** argv) {
   }
 
   if (rpc_addr.size() > 0) {
-    status = shard.InitReplicator(rpc_addr, rpc_port);
+    std::shared_ptr<rocksdb::replication::ReplWatcher> w(new TestReplWatcher(tasks));
+    status = shard.InitReplicator(rpc_addr, rpc_port, w);
     dbg("start RPC server, ret = %s\n", status.ToString().c_str());
   }
 

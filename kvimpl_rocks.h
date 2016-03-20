@@ -26,7 +26,7 @@
 #include "kvstore.h"
 #include "multi_completion.h"
 #include "threadpool.h"
-#include "repl_types.h"
+#include "replication/repl_types.h"
 
 using namespace std;
 
@@ -57,6 +57,9 @@ struct QueuedTask {
   } task;
 };
 
+namespace rocksdb { namespace replication {
+class ReplWatcher;
+}}
 
 class RocksDBLogger: public rocksdb::Logger {
  public:
@@ -122,14 +125,16 @@ class RocksDBShard {
     return db_->GetLatestSequenceNumber();
   }
 
-  rocksdb::Status InitReplicator(const std::string& address, int port) {
-    return db_->InitReplicator(address, port);
+  rocksdb::Status InitReplicator(const std::string& address,
+                                 int port,
+                                 std::shared_ptr<rocksdb::replication::ReplWatcher>& watcher) {
+    return db_->InitReplicator(address, port, watcher);
     //return rocksdb::Status::OK();
   }
 
   rocksdb::Status ConnectUpstream(const string& addr, int port) {
-    //return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::SemiSync);
-    return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::Async);
+    return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::SemiSync);
+    //return db_->ConnectToUpstream(addr, port, rocksdb::replication::ReplMode::Async);
     //return rocksdb::Status::OK();
   }
 
