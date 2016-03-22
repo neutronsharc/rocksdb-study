@@ -260,6 +260,8 @@ static void TimerCallback(union sigval sv) {
   memcpy(&last_stats, &tc->stats, sizeof(OpStats));
   memset(&tc->stats, 0, sizeof(OpStats));
 
+  if (!shard.db_) return;
+
   for (int i = 0; i < ntasks; i++) {
     tc->stats.reads += tasks[i].num_reads;
     tc->stats.read_bytes += tasks[i].read_bytes;
@@ -281,10 +283,21 @@ static void TimerCallback(union sigval sv) {
   uint64_t read_min, read_p50, read_p90, read_p99, read_max;
   uint64_t write_min, write_p50, write_p90, write_p99, write_max;
   read_min = hdr_value_at_percentile(read_histo, 0);
-
+  read_p50 = hdr_value_at_percentile(read_histo, 50);
+  read_p90 = hdr_value_at_percentile(read_histo, 90);
+  read_p99 = hdr_value_at_percentile(read_histo, 99);
+  read_max  = hdr_max(read_histo);
+  write_min = hdr_value_at_percentile(write_histo, 0);
+  write_p50 = hdr_value_at_percentile(write_histo, 50);
+  write_p90 = hdr_value_at_percentile(write_histo, 90);
+  write_p99 = hdr_value_at_percentile(write_histo, 99);
+  write_max = hdr_max(write_histo);
+  hdr_reset(read_histo);
+  hdr_reset(write_histo);
 
   printf("%s: proc %d in past %d seconds:  %ld reads (%ld failure, %ld miss), "
-         "%ld writes (%ld failure), latest write # %ld, latest db seq# %ld\n",
+         "%ld writes (%ld failure), 99%% read %.2f ms, 99%% write %.2f ms, "
+         "latest write # %ld, latest db seq# %ld\n",
          TimestampString().c_str(),
          procid,
          timer_cycle_sec,
@@ -293,10 +306,11 @@ static void TimerCallback(union sigval sv) {
          tc->stats.read_miss - last_stats.read_miss,
          tc->stats.writes - last_stats.writes,
          tc->stats.write_failure - last_stats.write_failure,
+         read_p99 / 1000.0,
+         write_p99 / 1000.0,
          last_obj_id,
          shard.LatestSequenceNumber()
          );
-
 }
 
 static void AddReadLatHisto(uint64_t lat) {
@@ -1129,8 +1143,9 @@ int main(int argc, char** argv) {
 
   ////////////////////
   // clearn up.
-  free(read_histo);
-  free(write_histo);
+  //free(read_histo);
+  //free(write_histo);
+  printf("db %s sequence = %ld\n", db_path.c_str(), shard.LatestSequenceNumber());
   shard.CloseDB();
   return 0;
 }

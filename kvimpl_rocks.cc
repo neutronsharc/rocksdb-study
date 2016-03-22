@@ -180,7 +180,7 @@ bool RocksDBShard::OpenDB(const std::string& path,
 
 void RocksDBShard::CloseDB() {
   if (db_) {
-    dbg("will close rocksdb at %s\n", db_path_.c_str());
+    printf("will close rocksdb at %s\n", db_path_.c_str());
     delete db_;
     db_ = nullptr;
   }
