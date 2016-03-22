@@ -199,6 +199,10 @@ static int downstream_port;
 
 static bool use_bulk_load = false;
 
+// After a write completes, should we read from replication peer to verify
+// data is replicated?
+static bool check_remote = false;
+
 static RocksDBShard shard;
 
 static vector<string> repl_ds_addresses;
@@ -274,6 +278,11 @@ static void TimerCallback(union sigval sv) {
     last_obj_id = tc->stats.writes + init_num_objs;
   }
 
+  uint64_t read_min, read_p50, read_p90, read_p99, read_max;
+  uint64_t write_min, write_p50, write_p90, write_p99, write_max;
+  read_min = hdr_value_at_percentile(read_histo, 0);
+
+
   printf("%s: proc %d in past %d seconds:  %ld reads (%ld failure, %ld miss), "
          "%ld writes (%ld failure), latest write # %ld, latest db seq# %ld\n",
          TimestampString().c_str(),
@@ -327,14 +336,16 @@ static void Worker(TaskContext *task) {
 
       status = task->db->Put(key, strlen(key), charvalue, objsize);
       if (!status.ok()) {
-        err("task %d: failed to write key %s (data size %d): %s\n",
-            task->id, key, objsize, status.ToString().c_str());
+        //err("task %d: failed to write key %s (data size %d): %s\n",
+        //    task->id, key, objsize, status.ToString().c_str());
         task->write_failure++;
         // don't forgive write failure during init load.
-        assert(0);
+        //assert(0);
       } else {
         task->num_writes++;
-        ReadbackCompare(key, task);
+        if (check_remote) {
+          ReadbackCompare(key, task);
+        }
       }
     }
     sem_post(&task->sem_end);
@@ -366,13 +377,15 @@ static void Worker(TaskContext *task) {
         AddWriteLatHisto(NowInUsec() - t1);
       }
       if (status.ok()) {
-        ReadbackCompare(key, task);
+        if (check_remote) {
+          ReadbackCompare(key, task);
+        }
         task->num_writes++;
         task->write_bytes += objsize;
         obj_id++;
       } else {
-        err("task %d: failed to write key %s (data size %d): %s\n",
-            task->id, key, objsize, status.ToString().c_str());
+        //err("task %d: failed to write key %s (data size %d): %s\n",
+        //    task->id, key, objsize, status.ToString().c_str());
         task->write_failure++;
       }
     } else {
@@ -610,9 +623,9 @@ static int ReadFromRemote(boost::shared_ptr<rocksdb::replication::ReplicationCli
     }
     rv = response.status.code;
   } catch (const apache::thrift::transport::TTransportException& e) {
-    printf("****  Read key %s from remote RPC: transport failure: %s\n", key, e.what());
+    dbg("****  Read key %s from remote RPC: transport failure: %s\n", key, e.what());
   } catch (const std::exception& e) {
-    printf("****  Read key %s from remote RPC: generic failure: %s\n", key, e.what());
+    dbg("****  Read key %s from remote RPC: generic failure: %s\n", key, e.what());
   }
 
   return rv;
@@ -705,6 +718,7 @@ void help() {
   printf("-C <address:port>    : local RPC address:port\n");
   printf("-E <address:port,address:port> : ',' separated list of replicaiton downstream peers\n"
          "                       We will read back from these peers to verify replication success.\n");
+  printf("-M                   : after write, ready from remote peers to verify data. Def not.\n");
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-a                   : run compaction before workload starts. Def not\n");
@@ -731,7 +745,7 @@ int main(int argc, char** argv) {
   bool checkpoint = false;
   bool destroy_db = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:ohlakXB")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:ohlakXBM")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -838,6 +852,10 @@ int main(int argc, char** argv) {
       case 'B':
         use_bulk_load = true;
         printf("will use bulk-load mode when populating data\n");
+        break;
+      case 'M':
+        check_remote = true;
+        printf("will read remote data after write.\n");
         break;
       case 'X':
         destroy_db = true;
