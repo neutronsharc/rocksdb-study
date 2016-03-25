@@ -1,4 +1,5 @@
 namespace cpp rocksdb.replication
+namespace py rocksdb.replication
 
 enum ErrorCode {
   SUCCESS = 0,
@@ -9,6 +10,7 @@ enum ErrorCode {
   DOWNSTREAM_READ_ERROR,
   DOWNSTREAM_WRITE_ERROR,
   CKPT_ERROR,
+  HTTP_SERVER_START_FAILURE,
 }
 
 enum RpcReplMode {
@@ -62,16 +64,29 @@ struct PullResponse {
 
 // Response to a "create checkpoint" request.
 struct CkptResult {
-  1: ErrorCode result; 
+  1: ErrorCode result;
 
   // checkpoint name.
   2: string name;
 
-  // parent dir name of the checkpoint at owner rocksdb, with a trailing '/'.
+  // parent dir name of the checkpoint at owner rocksdb, without a trailing '/'.
   3: string dirname;
 
   // all files included in this checkpoint, rooted from "dirname".
   4: list<string> filenames;
+}
+
+// Info about a running http server.
+struct HttpServerInfo {
+  // If the struct is ok.
+  1: ErrorCode state;
+
+  // server listens at this port.
+  2: i32 port;
+
+  3: string address;
+
+  4: string root_dir;
 }
 
 exception ReplException {
@@ -129,4 +144,11 @@ service Replication {
   CkptResult CreateCheckpoint(1:string name);
 
   void DeleteCheckpoint(1:string name);
+
+  // Request this rpc server to start a http server to serve data from the given dir.
+  HttpServerInfo StartHttpServer(1:string root_dir);
+
+  // Stop http server that is bound to the  given dir.
+  void StopHttpServer(1:string root_dir);
+
 }
