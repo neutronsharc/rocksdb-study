@@ -6,6 +6,7 @@ sys.path.append('gen-py')
 
 import urllib2
 import os 
+import time
 
 from thrift import Thrift
 from thrift.transport import TSocket
@@ -14,6 +15,7 @@ from thrift.protocol import TBinaryProtocol
 
 from rocksdb.replication import Replication
 from rocksdb.replication.ttypes import *
+
 
 def main():
     print 'test thrift python client'
@@ -58,8 +60,10 @@ def main():
 
         # download files from http server.
         client.StopHttpServer(rootdir)
+        time.sleep(1)
 
         client.DeleteCheckpoint(ckptname)
+        time.sleep(1)
 
     except Exception as e:
         print 'got exception: {}'.format(e)
