@@ -19,7 +19,7 @@ from rocksdb.replication.ttypes import *
 
 def main():
     print 'test thrift python client'
-    address = 'localhost'
+    address = 'hcd2-10g'
     socket = TSocket.TSocket(address, 9995)
     transport = TTransport.TBufferedTransport(socket)
     protocol = TBinaryProtocol.TBinaryProtocol(transport)

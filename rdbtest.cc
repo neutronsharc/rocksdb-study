@@ -7,7 +7,6 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <iomanip>
 #include <mutex>
 #include <string>
@@ -15,6 +14,7 @@
 #include <vector>
 #include <typeinfo>
 #include <iostream>
+#include <fstream>
 #include <chrono>
 #include <ctime>
 
@@ -37,6 +37,7 @@
 #include "utils.h"
 #include "hdr_histogram.h"
 #include "replication/repl_types.h"
+#include "replication/repl_util.h"
 #include "replication/gen-cpp/replication_types.h"
 #include "replication/gen-cpp/Replication.h"
 
@@ -711,6 +712,81 @@ static int ReadbackCompare(char* key, TaskContext* ctx) {
 }
 
 
+// Download a snapshot of remote DB from given addr:port to a local dir.
+static void DownloadCheckpoint(const string& addr, int port, const string& local_dir) {
+
+  boost::shared_ptr<rocksdb::replication::ReplicationClient> rpccli;
+  bool ret = ConnectToRPC(addr, port, rpccli);
+  if (!ret) {
+    printf("failed to connect to remote rpc %s:%d\n", addr.c_str(), port);
+    return;
+  }
+  printf("has created remote rpc %s:%d\n", addr.c_str(), port);
+
+  rocksdb::replication::CkptResult ckpt_result;
+  rocksdb::replication::HttpServerInfo http_srv;
+
+  string ckpt_name = "ckptxyz";
+
+  try {
+    // Create a checkpoint at remote.
+    rpccli->CreateCheckpoint(ckpt_result, ckpt_name);
+    if (ckpt_result.code != rocksdb::replication::ErrorCode::SUCCESS) {
+      err("failed to created remote ckpt %s\n", ckpt_name.c_str());
+      return;
+    }
+
+    // Tell remote to start http server to serve the checkpoint data.
+    rpccli->StartHttpServer(http_srv, ckpt_result.dirname);
+    if (http_srv.code != rocksdb::replication::ErrorCode::SUCCESS) {
+      err("failed to start remote http server for ckpt %s \n", ckpt_name.c_str());
+      return;
+    }
+    printf("have started remote http server %s:%d to server %s\n",
+           http_srv.address.c_str(), http_srv.port, http_srv.root_dir.c_str());
+
+    // Download the ckpt files.
+    rocksdb::replication::HttpDownloader dl;
+
+    string remote_url = http_srv.address;
+    remote_url.append(":").append(std::to_string(http_srv.port));
+    uint64_t rate_limit = 1024UL * 1024 * 50;
+
+    for (const string& s : ckpt_result.filenames) {
+      if (s == "." || s == "..") continue;
+      string remote_file = remote_url;
+      uint64_t t1 = NowInUsec();
+      remote_file.append("/").append(s);
+      string local_fname = local_dir;
+      local_fname.append("/").append(s);
+      printf("will download remote %s to local dir: %s with rate limit %ld\n",
+             remote_file.c_str(), local_dir.c_str(), rate_limit);
+      bool rv = dl.DownloadFile(remote_file, local_fname, rate_limit);
+      uint64_t t2 = NowInUsec() - t1;
+      if (rv) {
+        std::ifstream is(local_fname, std::ifstream::binary);
+        uint64_t fsize = 0;
+        if (is) {
+          is.seekg(0, is.end);
+          fsize = is.tellg();
+          is.close();
+        }
+        printf("\thave downloaded file %s to local %s (%.3f MB in %ld msec), %.3f MB/s \n",
+               remote_file.c_str(), local_fname.c_str(),
+               fsize / 1000000.0, t2 / 1000, (fsize + 0.0) / t2);
+      } else {
+        err("failed to download remote file %s\n", remote_file.c_str());
+      }
+    }
+
+  } catch (const apache::thrift::transport::TTransportException& e) {
+    dbg("****  remote RPC: transport failure: %s\n", e.what());
+  } catch (const std::exception& e) {
+    dbg("****  remote RPC: generic failure: %s\n", e.what());
+  }
+
+}
+
 void help() {
   printf("Test RocksDB raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
@@ -732,6 +808,7 @@ void help() {
   printf("-C <address:port>    : local RPC address:port\n");
   printf("-E <address:port,address:port> : ',' separated list of replicaiton downstream peers\n"
          "                       We will read back from these peers to verify replication success.\n");
+  printf("-A                   : download a snapshot from given upstream to given path\n");
   printf("-M                   : after write, ready from remote peers to verify data. Def not.\n");
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
@@ -758,8 +835,9 @@ int main(int argc, char** argv) {
   std::vector<std::string> ss;
   bool checkpoint = false;
   bool destroy_db = false;
+  bool download_test = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:ohlakXBM")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:ohlakXBMA")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -830,6 +908,9 @@ int main(int argc, char** argv) {
       case 'k':
         checkpoint = true;
         printf("test with checkpoint.\n");
+      case 'A':
+        download_test = true;
+        printf("will run download test.\n");
         break;
       case 'U':
         SplitString(std::string(optarg), ':', ss);
@@ -901,6 +982,15 @@ int main(int argc, char** argv) {
   if (checkpoint) {
     ReadCheckpoint(db_path, "thr-0-key-", init_num_objs);
     return 0;
+  }
+
+  if (download_test) {
+    if (db_path.size() == 0 || upstream_addr.size() == 0) {
+      err("must provide upstream and dbpath\n");
+      return -1;
+    }
+    DownloadCheckpoint(upstream_addr, upstream_port, db_path);
+    printf("have downloaded remote db to local %s\n", db_path.c_str());
   }
 
   if (destroy_db) {
