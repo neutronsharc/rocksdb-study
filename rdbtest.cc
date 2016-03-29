@@ -209,6 +209,9 @@ static RocksDBShard shard;
 static vector<string> repl_ds_addresses;
 static vector<int> repl_ds_ports;
 
+// default download rate limit = 50 MB/s
+static uint64_t dl_rate_limit = 1024L * 1024 * 50;
+
 class TestReplWatcher : public rocksdb::replication::ReplWatcher {
  public:
   TestReplWatcher(vector<TaskContext>& tasks) : tasks_(tasks) {}
@@ -750,7 +753,7 @@ static void DownloadCheckpoint(const string& addr, int port, const string& local
 
     string remote_url = http_srv.address;
     remote_url.append(":").append(std::to_string(http_srv.port));
-    uint64_t rate_limit = 1024UL * 1024 * 50;
+    uint64_t rate_limit = dl_rate_limit;
 
     for (const string& s : ckpt_result.filenames) {
       if (s == "." || s == "..") continue;
@@ -778,6 +781,8 @@ static void DownloadCheckpoint(const string& addr, int port, const string& local
         err("failed to download remote file %s\n", remote_file.c_str());
       }
     }
+
+    rpccli->StopHttpServer(ckpt_result.dirname);
 
   } catch (const apache::thrift::transport::TTransportException& e) {
     dbg("****  remote RPC: transport failure: %s\n", e.what());
@@ -809,6 +814,7 @@ void help() {
   printf("-E <address:port,address:port> : ',' separated list of replicaiton downstream peers\n"
          "                       We will read back from these peers to verify replication success.\n");
   printf("-A                   : download a snapshot from given upstream to given path\n");
+  printf("-L <rate limit>      : download snapshot rate limit in MB, default to 50MB/s\n");
   printf("-M                   : after write, ready from remote peers to verify data. Def not.\n");
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
@@ -837,7 +843,7 @@ int main(int argc, char** argv) {
   bool destroy_db = false;
   bool download_test = false;
 
-  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:ohlakXBMA")) != EOF) {
+  while ((c = getopt(argc, argv, "p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:L:ohlakXBMA")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -888,6 +894,10 @@ int main(int argc, char** argv) {
       case 'c':
         db_cache_mb = atoi(optarg);
         printf("will use %ld MB DB block cache\n", db_cache_mb);
+        break;
+      case 'L':
+        dl_rate_limit = atoi(optarg) * 1024L * 1024;
+        printf("download at rate limit %d MB/s\n", atoi(optarg));
         break;
       case 'a':
         compact_before_workload = true;
