@@ -1,6 +1,12 @@
 # rocksdb-study
 study rocks db performance
 
+# Dependencies
+
+```
+$ sudo apt-get install -y libbsd-dev libcrypto++-dev libsnappy-dev libbz2-dev  libcurl4-openssl-dev libgoogle-glog-dev
+```
+
 # build rocksdb
 
 Build with release mode: `make static_lib `.  The following flags will be used:
