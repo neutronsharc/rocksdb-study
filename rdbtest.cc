@@ -222,10 +222,10 @@ class TestReplWatcher : public rocksdb::replication::ReplWatcher {
       boost::shared_ptr<rocksdb::replication::ReplicationClient> rep;
       bool ret = ConnectToRPC(addr, port, rep);
       if (ret) {
-        printf("task %d has connected to remote RPC %s:%d\n", i, addr.c_str(), port);
+        dbg("rdbtest worker %d has connected to remote RPC %s:%d\n", i, addr.c_str(), port);
         std::unique_lock<std::mutex> lk(tasks_[i].mtx_);
         tasks_[i].repl_peers.push_back(rep);
-        printf("task %d has added downstream peer %s:%d\n",
+        dbg("rdbtest worker %d has added downstream peer %s:%d\n",
                tasks_[i].id, addr.c_str(), port);
       }
     }
@@ -1167,21 +1167,23 @@ int main(int argc, char** argv) {
     dbg("start RPC server, ret = %s\n", status.ToString().c_str());
   }
 
-  printf("\nStart workload ...\n");
-
-  uint64_t tstart = NowInUsec();
-
-  for (auto& task : tasks) {
-    sem_post(&task.sem_begin);
-  }
-
   if (upstream_addr.size() > 0) {
     status = shard.ConnectUpstream(upstream_addr, upstream_port);
     dbg("connect to upstream, ret = %s\n", status.ToString().c_str());
+    sleep(2);
+    status = shard.ConnectUpstream(upstream_addr, upstream_port);
+    dbg("connect to upstream again, ret = %s\n", status.ToString().c_str());
   }
   if (downstream_addr.size() > 0) {
     status = shard.ConnectDownstream(downstream_addr, downstream_port);
     dbg("connect to downstream, ret = %s\n", status.ToString().c_str());
+  }
+
+  printf("\nWill start workload ...\n");
+  uint64_t tstart = NowInUsec();
+
+  for (auto& task : tasks) {
+    sem_post(&task.sem_begin);
   }
 
   for (auto& task : tasks) {
@@ -1200,6 +1202,7 @@ int main(int argc, char** argv) {
   uint64_t totalReadOps = 0, totalWriteOps = 0;
   for (int i = 0; i < num_threads; i++) {
     if (workers[i].joinable()) {
+      printf("will join thread %d\n", i);
       workers[i].join();
       printf("joined thread %d\n", i);
     }
