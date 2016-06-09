@@ -217,7 +217,7 @@ class TestReplWatcher : public rocksdb::replication::ReplWatcher {
   TestReplWatcher(vector<TaskContext>& tasks) : tasks_(tasks) {}
 
   virtual void OnDownstreamConnection(const std::string& addr, int port) {
-    printf("downstream %s:%d connection request...\n", addr.c_str(), port);
+    dbg("downstream %s:%d connection request...\n", addr.c_str(), port);
     for (int i = 0; i < (int)tasks_.size(); i++) {
       boost::shared_ptr<rocksdb::replication::ReplicationClient> rep;
       bool ret = ConnectToRPC(addr, port, rep);
@@ -226,7 +226,6 @@ class TestReplWatcher : public rocksdb::replication::ReplWatcher {
         std::unique_lock<std::mutex> lk(tasks_[i].mtx_);
         tasks_[i].repl_peers.push_back(rep);
         dbg("rdbtest worker %d has added downstream peer %s:%d\n",
-               tasks_[i].id, addr.c_str(), port);
       }
     }
     repl_ds_addresses.push_back(addr);

@@ -1,6 +1,6 @@
 namespace cpp rocksdb.replication
 namespace py rocksdb.replication
-
+namespace java rocksdb.replication
 enum ErrorCode {
   SUCCESS = 0,
   // relication master has no data more recent than requested.
@@ -29,7 +29,7 @@ struct RocksdbOpResponse {
   2: string data;
 }
 
-// An object of Update represent a WAL log entry applied to rocksdb.
+// An object of Update represents a WAL log entry applied to rocksdb.
 // A log entry may include multiple write-batches.
 struct Update {
   // beginning sequence no. of all write-batches encoded in the data.
@@ -58,13 +58,13 @@ struct PullRequest {
 
 // Response to a "pull from upstream" request.
 struct PullResponse {
-  1: required ErrorCode result; 
+  1: required ErrorCode code;
   2: required list<Update> updates;
 }
 
 // Response to a "create checkpoint" request.
 struct CkptResult {
-  1: ErrorCode result;
+  1: ErrorCode code;
 
   // checkpoint name.
   2: string name;
@@ -79,7 +79,7 @@ struct CkptResult {
 // Info about a running http server.
 struct HttpServerInfo {
   // If the struct is ok.
-  1: ErrorCode state;
+  1: ErrorCode code;
 
   // server listens at this port.
   2: i32 port;
@@ -104,7 +104,7 @@ service Replication {
   //
   // When this method returns success, upstream has synced the downstream up to date,
   // and started replication in given mode.
-  bool ConnectToUpstream(1:RpcReplMode mode, 2:string address, 3:i32 port);
+  bool ConnectToUpstream(1:RpcReplMode mode, 2:string address, 3:i32 port)
 
 
   /////////////////////////////
@@ -151,4 +151,13 @@ service Replication {
   // Stop http server that is bound to the  given dir.
   void StopHttpServer(1:string root_dir);
 
+  bool SetUpstreamInfo(1:RpcReplMode mode, 2:string address, 3:i32 port);
+
+//  void SetCompactionFilter(1:i32 low_range, 2:i32 high_range, 3:i32 pool_range);
+
+  void TriggerCompaction();
+
+  // Stop replicating to downstream.
+  // Returns number of repl2downstream threads that are stopped.
+  i32 StopReplicate2Downstream();
 }
