@@ -225,7 +225,7 @@ class TestReplWatcher : public rocksdb::replication::ReplWatcher {
         dbg("rdbtest worker %d has connected to remote RPC %s:%d\n", i, addr.c_str(), port);
         std::unique_lock<std::mutex> lk(tasks_[i].mtx_);
         tasks_[i].repl_peers.push_back(rep);
-        dbg("rdbtest worker %d has added downstream peer %s:%d\n",
+        dbg("rdbtest worker %d has added downstream peer %s:%d\n", i, addr.c_str(), port);
       }
     }
     repl_ds_addresses.push_back(addr);
@@ -1169,9 +1169,9 @@ int main(int argc, char** argv) {
   if (upstream_addr.size() > 0) {
     status = shard.ConnectUpstream(upstream_addr, upstream_port);
     dbg("connect to upstream, ret = %s\n", status.ToString().c_str());
-    sleep(2);
-    status = shard.ConnectUpstream(upstream_addr, upstream_port);
-    dbg("connect to upstream again, ret = %s\n", status.ToString().c_str());
+    //sleep(2);
+    //status = shard.ConnectUpstream(upstream_addr, upstream_port);
+    //dbg("connect to upstream again, ret = %s\n", status.ToString().c_str());
   }
   if (downstream_addr.size() > 0) {
     status = shard.ConnectDownstream(downstream_addr, downstream_port);
