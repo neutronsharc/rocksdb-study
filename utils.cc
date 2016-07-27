@@ -36,6 +36,15 @@ uint64_t GetStartTime() {
   return start_time;
 }
 
+// Fill "tspec" with absolute time starting from now, plug the given ms.
+void GetAbsTimeInFuture(struct timespec* tspec, uint64_t ms) {
+  struct timeval now;
+  gettimeofday(&now, NULL);
+  uint64_t abstime_ns = now.tv_usec * 1000 + ms * 1000000L + now.tv_sec * 1000000000L;
+  tspec->tv_sec = abstime_ns / 1000000000L;
+  tspec->tv_nsec = abstime_ns % 1000000000L;
+}
+
 // Convert a TTL time (in seconds, relative to start_time)
 // to seconds since epoch.
 uint64_t ExpireTimeToEpochTime(uint64_t expire_time) {

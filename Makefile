@@ -20,10 +20,11 @@ objs = kvinterface.o kvimpl_rocks.o rocksdb_tuning.o hash.o utils.o
 
 subdirs = hdr_histogram
 
-all: testlibardb rdbtest
+all: testlibardb
+#	rdbtest
 #kvlib.a
 
-testlibardb : testlibardb.o
+testlibardb : testlibardb.o utils.o hash.o
 	g++ -g $^ hdr_histogram/lib_hdr_histogram.a -o$@ $(LDFLAGS)
 
 kvlib.a : $(objs) libhdrhistogram

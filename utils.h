@@ -129,4 +129,6 @@ string TimestampString();
 
 extern uint64_t start_time_epoch;
 
+extern void GetAbsTimeInFuture(struct timespec* tspec, uint64_t ms);
+
 #endif  // __UTILS_H__
