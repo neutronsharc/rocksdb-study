@@ -177,6 +177,12 @@ struct TaskContext {
   // When the task starts.
   uint64_t start_usec;
 
+  // total # of ops done by this task.
+  uint64_t total_ops;
+
+  // Target qps by this worker.
+  uint64_t target_qps;
+
   int object_size;
 
   KvHandle *db;
@@ -196,11 +202,21 @@ struct TaskContext {
 
   TaskContext() {
     stopped = false;
+    total_ops = 0;
   }
 
   void Stop() {
     stopped = true;
     INFO_LOG("will stop task %d", id);
+  }
+
+  void RateLimit() {
+    uint64_t target_time_usec = total_ops * 1000000 / target_qps;
+    uint64_t actual_time_usec = NowInUsec() - start_usec;
+
+    if (actual_time_usec < target_time_usec) {
+      usleep(target_time_usec - actual_time_usec);
+    }
   }
 };
 
@@ -226,8 +242,6 @@ struct WorkerTaskContext : public TaskContext {
   uint64_t write_bytes = 0;
   uint64_t write_failure = 0;
 
-  // total # of ops done by this task.
-  uint64_t total_ops;
 
   // Worker thread will upload its latencies to this array every timer interval.
   uint64_t write_latency[2][LatencyPos::Last];
@@ -315,8 +329,6 @@ struct ProducerTaskContext : public TaskContext {
   // Obj id to create if next op is write.
   uint64_t next_obj_id;
 
-  // Target qps by this worker.
-  uint64_t target_qps;
 
   // ratio of write ops, 0.0 ~ 1.0. Main thread will set this value.
   double write_ratio;
@@ -390,6 +402,9 @@ static void Produce(ProducerTaskContext *ctx) {
     item.data_size = ctx->object_size;
     item.write = 1;
     ctx->queue->Enqueue(item);
+
+    ctx->total_ops++;
+    ctx->RateLimit();
   }
 
   ctx->queue->Stop();
@@ -436,6 +451,8 @@ static void DoWork(WorkerTaskContext *ctx) {
     } else {
 
     }
+    ctx->total_ops++;
+    //ctx->RateLimit();
   }
 
   INFO_LOG("worker thread %d exited", ctx->id);
@@ -517,15 +534,15 @@ void help() {
   printf("-p <dbpath>          : rocksdb paths. Must provide.\n");
   printf("-a                   : run auto-compaction, default not\n");
   printf("-t <num of threads>  : number of worker threads to run. Def = 1\n");
-  printf("-s <obj size>        : object size in bytes. Def = 4000\n");
+  printf("-s <obj size>        : object size in bytes. Def = 4096\n");
   printf("-n <num of objs>     : Init db with these many objects. Def = 1000000\n");
   printf("-i <seconds>         : Run workoad for these many seconds. Default = 30\n");
   printf("-Q <cmd queue size>  : Run workoad for these many seconds. Default = 4\n");
+  printf("-q <QPS>             : Aggregated target QPS by all threads. \n"
+         "                       Def = 10000 op/sec\n");
 
 
   printf("-c <DB cache>        : DB cache in MB. Def = 5000\n");
-  printf("-q <QPS>             : Aggregated target QPS by all threads. \n"
-         "                       Def = 10000 op/sec\n");
   printf("-w <write ratio>     : write ratio. Def = 0\n");
   printf("-m <multiget>        : multi-get these number of keys in one get.\n"
          "                       def = 1 key\n");
@@ -558,10 +575,10 @@ int main(int argc, char** argv) {
   int c;
   char *dbpath;
   int num_threads = 1;
-  uint64_t init_num_objs = 100000;
+  uint64_t init_num_objs = 1000000;
   uint64_t total_target_qps = 10000;
   double write_ratio = 0;
-  int runtime_sec = 15;
+  int runtime_sec = 30;
   int timer_interval_sec = 2;
   int cmd_queue_size = 4;
   int obj_size = 4096;
@@ -588,6 +605,9 @@ int main(int argc, char** argv) {
         break;
       case 'Q':
         cmd_queue_size = atoi(optarg);
+        break;
+      case 'q':
+        total_target_qps = atoi(optarg);
         break;
       case 'a':
         auto_compaction = true;
