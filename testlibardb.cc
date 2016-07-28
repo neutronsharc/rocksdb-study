@@ -613,6 +613,7 @@ void help() {
   printf("-o                   : overwrite entire DB before test. Def not\n");
   printf("-S                   : init load qps. Def 10000\n");
   printf("-w <write ratio>     : write ratio. Def = 0\n");
+  printf("-f <config file>     : config file. Def no\n");
 
 
   printf("-c <DB cache>        : DB cache in MB. Def = 5000\n");
@@ -656,11 +657,12 @@ int main(int argc, char** argv) {
   bool overwrite_all = false;
   bool auto_compaction = false;
   int init_load_qps = 10000;
+  char *config_file = NULL;
 
   // Init random number.
   std::srand(NowInUsec());
 
-  while ((c = getopt(argc, argv, "S:Q:p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:L:ohlakXBMA")) != EOF) {
+  while ((c = getopt(argc, argv, "f:S:Q:p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:L:ohlakXBMA")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -698,6 +700,9 @@ int main(int argc, char** argv) {
       case 'o':
         overwrite_all = true;
         break;
+      case 'f':
+        config_file = optarg;
+        break;
       default:
         break;
     }
@@ -725,9 +730,17 @@ int main(int argc, char** argv) {
   INFO_LOG("init load qps %d", init_load_qps);
   INFO_LOG("write ratio = %f", write_ratio);
   INFO_LOG("init overwrite = %s", overwrite_all ? "true" : "false");
+  if (config_file) {
+    INFO_LOG("will use config file %s", config_file);
+  }
 
   KvHandle handle;
-  handle.Open(data_dir, rpcip, rpcport, auto_compaction);
+  if (config_file) {
+    string cfile(config_file);
+    handle.OpenWithConfigFile(data_dir, rpcip, rpcport, cfile);
+  } else {
+    handle.Open(data_dir, rpcip, rpcport, auto_compaction);
+  }
 
   //WorkQueue queue(cmd_queue_size);
   wqueue.max_queue_size = cmd_queue_size;
