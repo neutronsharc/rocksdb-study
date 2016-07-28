@@ -34,6 +34,8 @@
 
 using namespace ardb;
 
+static uint64_t GetRandom(uint64_t max_val);
+
 #define MAX_KEY_LEN (30)
 
 struct WorkItem {
@@ -103,9 +105,13 @@ struct WorkQueue {
     issued_requests++;
   }
 
+  uint64_t GetIssued() { return issued_requests; }
+
   void IncCompleted() {
     completed_requests++;
   }
+
+  uint64_t GetCompleted() { return completed_requests; }
 
   void IncCompletedReadSize(int size) {
     completed_read_size += size;
@@ -131,12 +137,12 @@ struct WorkQueue {
     Lock();
     while (queue.size() >= max_queue_size) {
       Unlock();
-      usleep(500);
+      usleep(100);
       Lock();
     }
     queue.push(item);
     pending_requests++;
-    issued_requests++;
+    IncIssued();
     pthread_cond_signal(&pending_cond);
     Unlock();
   }
@@ -152,7 +158,7 @@ struct WorkQueue {
         return true;
       }
       if (stopped) {
-        INFO_LOG("exit dequeue without data");
+        //INFO_LOG("exit dequeue without data");
         Unlock();
         return false;
       }
@@ -183,6 +189,9 @@ struct TaskContext {
   // Target qps by this worker.
   uint64_t target_qps;
 
+  // qps of initial load.
+  uint64_t init_load_qps;
+
   int object_size;
 
   KvHandle *db;
@@ -196,10 +205,6 @@ struct TaskContext {
 
   /////////////////////
 
-  //bool ShouldWrite();
-
-  //void RateLimit();
-
   TaskContext() {
     stopped = false;
     total_ops = 0;
@@ -210,8 +215,8 @@ struct TaskContext {
     INFO_LOG("will stop task %d", id);
   }
 
-  void RateLimit() {
-    uint64_t target_time_usec = total_ops * 1000000 / target_qps;
+  void RateLimit(uint64_t targetqps) {
+    uint64_t target_time_usec = total_ops * 1000000 / targetqps;
     uint64_t actual_time_usec = NowInUsec() - start_usec;
 
     if (actual_time_usec < target_time_usec) {
@@ -301,12 +306,16 @@ struct WorkerTaskContext : public TaskContext {
     int sig_digits = 3;
     hdr_init(lowest, highest, sig_digits, &read_histo);
     hdr_init(lowest, highest, sig_digits, &write_histo);
-    INFO_LOG("memory footprint of hdr-histogram: %ld\n",
-             hdr_get_memory_size(read_histo));
+    //INFO_LOG("memory footprint of hdr-histogram: %ld\n",
+    //         hdr_get_memory_size(read_histo));
   }
 
   void RecordWriteLatency(uint64_t lat) {
     hdr_record_value(write_histo, lat);
+  }
+
+  void RecordReadLatency(uint64_t lat) {
+    hdr_record_value(read_histo, lat);
   }
 
   ~WorkerTaskContext() {
@@ -333,8 +342,21 @@ struct ProducerTaskContext : public TaskContext {
   // ratio of write ops, 0.0 ~ 1.0. Main thread will set this value.
   double write_ratio;
 
+  // Should we overwrite all data before test?
+  bool overwrite_all;
+
   ProducerTaskContext() : TaskContext() {
     next_obj_id = 0;
+  }
+
+  bool ShouldWrite() {
+    if (write_ratio == 0) {
+      return false;
+    }
+    uint64_t maxv = 1000000;
+    uint64_t thresh = maxv * write_ratio;
+    uint64_t v = GetRandom(maxv);
+    return v < thresh;
   }
 };
 
@@ -375,7 +397,6 @@ struct TimerContext {
 //////////////////////////////////////////////////////////////
 WorkQueue wqueue;
 
-static bool auto_compaction = false;
 
 static std::vector<std::thread> workers;
 static std::vector<std::shared_ptr<WorkerTaskContext> > tasks_ctx;
@@ -385,29 +406,61 @@ static std::vector<std::shared_ptr<WorkerTaskContext> > tasks_ctx;
 //////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////
 
+static uint64_t GetRandom(uint64_t max_val) {
+  return std::rand() % max_val;
+}
+
 static void Produce(ProducerTaskContext *ctx) {
   ctx->start_usec = NowInUsec();
 
   INFO_LOG("producer thread %d started", ctx->id);
 
   // Populate these many objs
-  ctx->next_obj_id = 0;
-  while (NowInUsec() - ctx->start_usec < ctx->runtime_usec) {
-    if (ctx->next_obj_id >= ctx->init_num_objs) {
-      continue;
+  if (ctx->overwrite_all) {
+    ctx->next_obj_id = 0;
+    INFO_LOG("will populate %ld objects", ctx->init_num_objs);
+    while (ctx->next_obj_id < ctx->init_num_objs) {
+      WorkItem item;
+      snprintf(item.key, MAX_KEY_LEN, "%020ld", (ctx->next_obj_id++) * ctx->object_size);
+      item.key_size = strlen(item.key);
+      item.data_size = ctx->object_size;
+      item.write = 1;
+      ctx->queue->Enqueue(item);
+      ctx->total_ops++;
+      ctx->RateLimit(ctx->init_load_qps);
     }
+    // wait for outstanding rqsts to finish.
+    while (ctx->queue->GetCompleted() < ctx->queue->GetIssued()) {
+      usleep(100000);
+    }
+  }
+
+  // now run workload.
+  INFO_LOG("will start to run workload for %ld seconds", ctx->runtime_usec / 1000000);
+  ctx->total_ops = 0;
+  while (NowInUsec() - ctx->start_usec < ctx->runtime_usec) {
     WorkItem item;
-    snprintf(item.key, MAX_KEY_LEN, "%020ld", (ctx->next_obj_id++) * ctx->object_size);
+
+    item.write = ctx->ShouldWrite() ? 1 : 0;
+
+    uint64_t id = GetRandom(ctx->init_num_objs);
+    snprintf(item.key, MAX_KEY_LEN, "%020ld", id * ctx->object_size);
     item.key_size = strlen(item.key);
     item.data_size = ctx->object_size;
-    item.write = 1;
     ctx->queue->Enqueue(item);
 
     ctx->total_ops++;
-    ctx->RateLimit();
+    ctx->RateLimit(ctx->target_qps);
   }
 
+  // wait for outstanding rqsts to finish.
+  while (ctx->queue->GetCompleted() < ctx->queue->GetIssued()) {
+    usleep(100000);
+  }
+
+  INFO_LOG("will stop workload queue");
   ctx->queue->Stop();
+
   INFO_LOG("producer thread %d exited", ctx->id);
 }
 
@@ -449,10 +502,27 @@ static void DoWork(WorkerTaskContext *ctx) {
         ctx->write_failure++;
       }
     } else {
-
+      int data_len = 0;
+      rv = ctx->db->ReadStore(item.key, item.key_size, buf, &data_len);
+      if (rv == 0) {
+        assert(data_len == item.data_size);
+        ctx->queue->IncCompletedWriteSize(data_len);
+        ctx->queue->IncCompleted();
+        ctx->num_reads++;
+        ctx->read_bytes += data_len;
+        uint64_t t2 = NowInUsec();
+        ctx->RecordReadLatency(t2 - t1);
+        if (t2 - ctx->last_report_lat_timestamp >= report_interval_usec) {
+          ctx->ReportLatency();
+          ctx->last_report_lat_timestamp = t2;
+        }
+      } else if (rv == 1) {
+        ctx->read_miss++;
+      } else {
+        ctx->read_failure++;
+      }
     }
     ctx->total_ops++;
-    //ctx->RateLimit();
   }
 
   INFO_LOG("worker thread %d exited", ctx->id);
@@ -540,10 +610,12 @@ void help() {
   printf("-Q <cmd queue size>  : Run workoad for these many seconds. Default = 4\n");
   printf("-q <QPS>             : Aggregated target QPS by all threads. \n"
          "                       Def = 10000 op/sec\n");
+  printf("-o                   : overwrite entire DB before test. Def not\n");
+  printf("-S                   : init load qps. Def 10000\n");
+  printf("-w <write ratio>     : write ratio. Def = 0\n");
 
 
   printf("-c <DB cache>        : DB cache in MB. Def = 5000\n");
-  printf("-w <write ratio>     : write ratio. Def = 0\n");
   printf("-m <multiget>        : multi-get these number of keys in one get.\n"
          "                       def = 1 key\n");
   printf("-x <key>             : write this key with random value of given size\n");
@@ -559,7 +631,6 @@ void help() {
   printf("-k                   : the path in -p is a checkpoint. Def not\n");
   printf("-l                   : count r/w latency. Def not\n");
   printf("-B                   : when populating data, use bulk load mode (disable WAL). Def not\n");
-  printf("-o                   : overwrite entire DB before test. Def not\n");
   printf("-h                   : this message\n");
   printf("-X                   : destroy a checkpoint / db at path\n");
   //printf("-d <shards>          : number of shards. Def = 8\n");
@@ -582,8 +653,14 @@ int main(int argc, char** argv) {
   int timer_interval_sec = 2;
   int cmd_queue_size = 4;
   int obj_size = 4096;
+  bool overwrite_all = false;
+  bool auto_compaction = false;
+  int init_load_qps = 10000;
 
-  while ((c = getopt(argc, argv, "Q:p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:L:ohlakXBMA")) != EOF) {
+  // Init random number.
+  std::srand(NowInUsec());
+
+  while ((c = getopt(argc, argv, "S:Q:p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:L:ohlakXBMA")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -609,8 +686,17 @@ int main(int argc, char** argv) {
       case 'q':
         total_target_qps = atoi(optarg);
         break;
+      case 'S':
+        init_load_qps = atoi(optarg);
+        break;
+      case 'w':
+        write_ratio = atof(optarg);
+        break;
       case 'a':
         auto_compaction = true;
+        break;
+      case 'o':
+        overwrite_all = true;
         break;
       default:
         break;
@@ -623,8 +709,7 @@ int main(int argc, char** argv) {
   }
 
   ardb::Properties props;
-  std::string data_dir(dbpath);
-  conf_set(props,"data-dir", data_dir, true);
+  std::string data_dir(dbpath); conf_set(props,"data-dir", data_dir, true);
 
   std::string rpcip;
   int rpcport = 0;
@@ -637,6 +722,9 @@ int main(int argc, char** argv) {
   INFO_LOG("cmd queue size %d", cmd_queue_size);
   INFO_LOG("will run workload for %d seconds", runtime_sec);
   INFO_LOG("object size %d", obj_size);
+  INFO_LOG("init load qps %d", init_load_qps);
+  INFO_LOG("write ratio = %f", write_ratio);
+  INFO_LOG("init overwrite = %s", overwrite_all ? "true" : "false");
 
   KvHandle handle;
   handle.Open(data_dir, rpcip, rpcport, auto_compaction);
@@ -660,12 +748,14 @@ int main(int argc, char** argv) {
   ProducerTaskContext producer_ctx;
   producer_ctx.init_num_objs = init_num_objs;
   producer_ctx.target_qps = total_target_qps;
+  producer_ctx.init_load_qps = init_load_qps;
   producer_ctx.write_ratio = write_ratio;
   producer_ctx.runtime_usec = runtime_sec * 1000000L;
   producer_ctx.queue = &wqueue;
   producer_ctx.db = &handle;
   producer_ctx.object_size = obj_size;
   producer_ctx.id = 0;
+  producer_ctx.overwrite_all = overwrite_all;
   std::thread producer(Produce, &producer_ctx);
 
   sleep(1);
