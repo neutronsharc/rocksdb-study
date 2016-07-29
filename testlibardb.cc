@@ -411,7 +411,6 @@ static uint64_t GetRandom(uint64_t max_val) {
 }
 
 static void Produce(ProducerTaskContext *ctx) {
-  ctx->start_usec = NowInUsec();
 
   INFO_LOG("producer thread %d started", ctx->id);
 
@@ -435,9 +434,11 @@ static void Produce(ProducerTaskContext *ctx) {
     }
   }
 
+  ctx->start_usec = NowInUsec();
+  ctx->total_ops = 0;
+
   // now run workload.
   INFO_LOG("will start to run workload for %ld seconds", ctx->runtime_usec / 1000000);
-  ctx->total_ops = 0;
   while (NowInUsec() - ctx->start_usec < ctx->runtime_usec) {
     WorkItem item;
 
@@ -607,14 +608,15 @@ void help() {
   printf("-s <obj size>        : object size in bytes. Def = 4096\n");
   printf("-n <num of objs>     : Init db with these many objects. Def = 1000000\n");
   printf("-i <seconds>         : Run workoad for these many seconds. Default = 30\n");
-  printf("-Q <cmd queue size>  : Run workoad for these many seconds. Default = 4\n");
-  printf("-q <QPS>             : Aggregated target QPS by all threads. \n"
-         "                       Def = 10000 op/sec\n");
-  printf("-o                   : overwrite entire DB before test. Def not\n");
+  printf("-Q <cmd queue size>  : Cmd queue size. Default = 4\n");
   printf("-S                   : init load qps. Def 10000\n");
+  printf("-q <QPS>             : Aggregated workload target QPS by all threads. \n"
+         "                       Def = 10000 op/sec\n");
   printf("-w <write ratio>     : write ratio. Def = 0\n");
   printf("-f <config file>     : config file. Def no\n");
+  printf("-o                   : overwrite entire DB before test. Def not\n");
 
+  printf("******** below not used yet ************\n");
 
   printf("-c <DB cache>        : DB cache in MB. Def = 5000\n");
   printf("-m <multiget>        : multi-get these number of keys in one get.\n"
@@ -720,19 +722,24 @@ int main(int argc, char** argv) {
   int rpcport = 0;
   get_maxspeed_host_ipv4(rpcip);
 
+  // Show config.
+  INFO_LOG("===========  Config::");
   INFO_LOG("will open db at dir %s", data_dir.c_str());
-  INFO_LOG("%s do auto compaction", auto_compaction ? "will" : "will NOT");
   INFO_LOG("rpc server will use address %s:%d", rpcip.c_str(), rpcport);
+  INFO_LOG("%s do auto compaction", auto_compaction ? "will" : "will NOT");
   INFO_LOG("will run %d threads ", num_threads);
-  INFO_LOG("cmd queue size %d", cmd_queue_size);
   INFO_LOG("will run workload for %d seconds", runtime_sec);
   INFO_LOG("object size %d", obj_size);
-  INFO_LOG("init load qps %d", init_load_qps);
-  INFO_LOG("write ratio = %f", write_ratio);
+  INFO_LOG("cmd queue size %d", cmd_queue_size);
   INFO_LOG("init overwrite = %s", overwrite_all ? "true" : "false");
+  INFO_LOG("init load %ld objects", init_num_objs);
+  INFO_LOG("init load qps %d", init_load_qps);
+  INFO_LOG("target workload qps %d", total_target_qps);
+  INFO_LOG("write ratio = %f", write_ratio);
   if (config_file) {
     INFO_LOG("will use config file %s", config_file);
   }
+  INFO_LOG("===========\n");
 
   KvHandle handle;
   if (config_file) {
