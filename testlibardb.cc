@@ -135,14 +135,18 @@ struct WorkQueue {
 
   void Enqueue(WorkItem& item) {
     Lock();
+    // wait if queue overflows.
     while (queue.size() >= max_queue_size) {
       Unlock();
-      usleep(100);
+      usleep(1000);
       Lock();
     }
+    // enqueu
     queue.push(item);
+    // update stats.
+    issued_requests++;
     pending_requests++;
-    IncIssued();
+    // notify other threads.
     pthread_cond_signal(&pending_cond);
     Unlock();
   }
@@ -150,6 +154,7 @@ struct WorkQueue {
   bool Dequeue(WorkItem* item) {
     Lock();
     while (1) {
+      // Grab head of queue if not empty.
       if (queue.size() > 0) {
         *item = queue.front();
         queue.pop();
@@ -157,11 +162,13 @@ struct WorkQueue {
         Unlock();
         return true;
       }
+      // exit if we are done.
       if (stopped) {
         //INFO_LOG("exit dequeue without data");
         Unlock();
         return false;
       }
+      // If queue is empty, relinqish lock and wait.
       if (queue.size() == 0) {
         struct timespec ts;
         GetAbsTimeInFuture(&ts, 1000);
@@ -171,6 +178,7 @@ struct WorkQueue {
   }
 };
 
+// generic context for a newly-spawned thread.
 struct TaskContext {
   // worker thread ID
   int id;
@@ -236,6 +244,8 @@ enum LatencyPos {
   Last,
 };
 
+// context for a worker thread. A worker thread keeps grabbing work items from
+// a shared queue and process the request.
 struct WorkerTaskContext : public TaskContext {
   // Stats of this worker task.
   uint64_t num_reads = 0;
@@ -331,7 +341,8 @@ struct WorkerTaskContext : public TaskContext {
   }
 };
 
-struct ProducerTaskContext : public TaskContext {
+// load-generator task uses this context to generate work load.
+struct LoadGeneratorTaskContext : public TaskContext {
   // Init db with these many objs.
   uint64_t init_num_objs;
 
@@ -345,7 +356,7 @@ struct ProducerTaskContext : public TaskContext {
   // Should we overwrite all data before test?
   bool overwrite_all;
 
-  ProducerTaskContext() : TaskContext() {
+  LoadGeneratorTaskContext() : TaskContext() {
     next_obj_id = 0;
   }
 
@@ -410,14 +421,17 @@ static uint64_t GetRandom(uint64_t max_val) {
   return std::rand() % max_val;
 }
 
-static void Produce(ProducerTaskContext *ctx) {
+// Producer thread keeps generating work items (with pre-defined r/w ratio),
+// and insert items to shared queue.
+static void GenerateLoad(LoadGeneratorTaskContext *ctx) {
 
-  INFO_LOG("producer thread %d started", ctx->id);
+  INFO_LOG("generator thread %d started", ctx->id);
 
-  // Populate these many objs
+  // Overwrite entire db with data.
   if (ctx->overwrite_all) {
     ctx->next_obj_id = 0;
     INFO_LOG("will populate %ld objects", ctx->init_num_objs);
+    uint64_t t1 = NowInUsec();
     while (ctx->next_obj_id < ctx->init_num_objs) {
       WorkItem item;
       snprintf(item.key, MAX_KEY_LEN, "%020ld", (ctx->next_obj_id++) * ctx->object_size);
@@ -428,10 +442,14 @@ static void Produce(ProducerTaskContext *ctx) {
       ctx->total_ops++;
       ctx->RateLimit(ctx->init_load_qps);
     }
+    uint64_t t2 = NowInUsec();
     // wait for outstanding rqsts to finish.
     while (ctx->queue->GetCompleted() < ctx->queue->GetIssued()) {
       usleep(100000);
     }
+    uint64_t t3 = NowInUsec();
+    INFO_LOG("generator init phase: generate work items %ld usec, "
+             "wait for init completion %ld usec\n", t2 - t1, t3 - t2);
   }
 
   ctx->start_usec = NowInUsec();
@@ -462,9 +480,10 @@ static void Produce(ProducerTaskContext *ctx) {
   INFO_LOG("will stop workload queue");
   ctx->queue->Stop();
 
-  INFO_LOG("producer thread %d exited", ctx->id);
+  INFO_LOG("generator thread %d exited", ctx->id);
 }
 
+// Worker thread: grab work items from queue and exec.
 static void DoWork(WorkerTaskContext *ctx) {
   int bufsize = 50000;
   char buf[bufsize];
@@ -507,7 +526,7 @@ static void DoWork(WorkerTaskContext *ctx) {
       rv = ctx->db->ReadStore(item.key, item.key_size, buf, &data_len);
       if (rv == 0) {
         assert(data_len == item.data_size);
-        ctx->queue->IncCompletedWriteSize(data_len);
+        ctx->queue->IncCompletedReadSize(data_len);
         ctx->queue->IncCompleted();
         ctx->num_reads++;
         ctx->read_bytes += data_len;
@@ -546,10 +565,14 @@ static void TimerCallback(union sigval sv) {
   tc->last_timestamp = t1;
 
   uint64_t wlat_min = 0;
+  uint64_t wlat_p50 = 0;
+  uint64_t wlat_p90 = 0;
   uint64_t wlat_p99 = 0;
   uint64_t wlat_p999 = 0;
   uint64_t wlat_max = 0;
   uint64_t rlat_min = 0;
+  uint64_t rlat_p50 = 0;
+  uint64_t rlat_p90 = 0;
   uint64_t rlat_p99 = 0;
   uint64_t rlat_p999 = 0;
   uint64_t rlat_max = 0;
@@ -566,11 +589,15 @@ static void TimerCallback(union sigval sv) {
 
     int write = 1;
     wlat_min = std::min(wlat_min, tasks_ctx[i]->RetrieveLatency(LatencyPos::Min, write));
+    wlat_p50 = std::max(wlat_p50, tasks_ctx[i]->RetrieveLatency(LatencyPos::P50, write));
+    wlat_p90 = std::max(wlat_p90, tasks_ctx[i]->RetrieveLatency(LatencyPos::P90, write));
     wlat_p99 = std::max(wlat_p99, tasks_ctx[i]->RetrieveLatency(LatencyPos::P99, write));
     wlat_p999 = std::max(wlat_p999, tasks_ctx[i]->RetrieveLatency(LatencyPos::P999, write));
     wlat_max = std::max(wlat_max, tasks_ctx[i]->RetrieveLatency(LatencyPos::Max, write));
     write = 0;
     rlat_min = std::min(rlat_min, tasks_ctx[i]->RetrieveLatency(LatencyPos::Min, write));
+    rlat_p50 = std::max(rlat_p99, tasks_ctx[i]->RetrieveLatency(LatencyPos::P50, write));
+    rlat_p90 = std::max(rlat_p99, tasks_ctx[i]->RetrieveLatency(LatencyPos::P90, write));
     rlat_p99 = std::max(rlat_p99, tasks_ctx[i]->RetrieveLatency(LatencyPos::P99, write));
     rlat_p999 = std::max(rlat_p999, tasks_ctx[i]->RetrieveLatency(LatencyPos::P999, write));
     rlat_max = std::max(rlat_max, tasks_ctx[i]->RetrieveLatency(LatencyPos::Max, write));
@@ -583,7 +610,8 @@ static void TimerCallback(union sigval sv) {
 
   INFO_LOG("in past %d seconds: %ld reads (%ld failure, %ld miss), %ld writes (%ld failure)\n"
            "      read IOPS %ld, read bw %.3f MB/s, write IOPS %ld, write bw %.3f MB/s\n"
-           "      rp99=%ld, rp999=%ld, rmax=%ld, wp99=%ld, wp999=%ld, wmax=%ld\n",
+           "      read lat(usec):  min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n"
+           "      write lat(usec): min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n",
            tc->timer_interval_sec,
            reads,
            tc->stats.read_failure - last_stats.read_failure,
@@ -594,9 +622,8 @@ static void TimerCallback(union sigval sv) {
            read_bytes / (elapsed_usecs + 0.0),
            (uint64_t)(writes / (elapsed_usecs / 1000000.0)),
            write_bytes / (elapsed_usecs + 0.0),
-           rlat_p99, rlat_p999, rlat_max,
-           wlat_p99, wlat_p999, wlat_max
-          );
+           rlat_min, rlat_p50, rlat_p90, rlat_p99, rlat_p999, rlat_max,
+           wlat_min, wlat_p50, wlat_p90, wlat_p99, wlat_p999, wlat_max);
 }
 
 void help() {
@@ -614,7 +641,7 @@ void help() {
          "                       Def = 10000 op/sec\n");
   printf("-w <write ratio>     : write ratio. Def = 0\n");
   printf("-f <config file>     : config file. Def no\n");
-  printf("-o                   : overwrite entire DB before test. Def not\n");
+  printf("-o                   : overwrite entire DB before test. Def not\n\n\n");
 
   printf("******** below not used yet ************\n");
 
@@ -715,8 +742,7 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  ardb::Properties props;
-  std::string data_dir(dbpath); conf_set(props,"data-dir", data_dir, true);
+  std::string data_dir(dbpath);
 
   std::string rpcip;
   int rpcport = 0;
@@ -725,7 +751,7 @@ int main(int argc, char** argv) {
   // Show config.
   INFO_LOG("===========  Config::");
   INFO_LOG("will open db at dir %s", data_dir.c_str());
-  INFO_LOG("rpc server will use address %s:%d", rpcip.c_str(), rpcport);
+  INFO_LOG("db rpc server address %s:%d", rpcip.c_str(), rpcport);
   INFO_LOG("%s do auto compaction", auto_compaction ? "will" : "will NOT");
   INFO_LOG("will run %d threads ", num_threads);
   INFO_LOG("will run workload for %d seconds", runtime_sec);
@@ -742,6 +768,7 @@ int main(int argc, char** argv) {
   INFO_LOG("===========\n");
 
   KvHandle handle;
+  PrepareDBEnv();
   if (config_file) {
     string cfile(config_file);
     handle.OpenWithConfigFile(data_dir, rpcip, rpcport, cfile);
@@ -764,19 +791,19 @@ int main(int argc, char** argv) {
     workers.push_back(std::thread(DoWork, ctx.get()));
   }
 
-  // start producer to generate workload.
-  ProducerTaskContext producer_ctx;
-  producer_ctx.init_num_objs = init_num_objs;
-  producer_ctx.target_qps = total_target_qps;
-  producer_ctx.init_load_qps = init_load_qps;
-  producer_ctx.write_ratio = write_ratio;
-  producer_ctx.runtime_usec = runtime_sec * 1000000L;
-  producer_ctx.queue = &wqueue;
-  producer_ctx.db = &handle;
-  producer_ctx.object_size = obj_size;
-  producer_ctx.id = 0;
-  producer_ctx.overwrite_all = overwrite_all;
-  std::thread producer(Produce, &producer_ctx);
+  // start load generator.
+  LoadGeneratorTaskContext genload_ctx;
+  genload_ctx.init_num_objs = init_num_objs;
+  genload_ctx.target_qps = total_target_qps;
+  genload_ctx.init_load_qps = init_load_qps;
+  genload_ctx.write_ratio = write_ratio;
+  genload_ctx.runtime_usec = runtime_sec * 1000000L;
+  genload_ctx.queue = &wqueue;
+  genload_ctx.db = &handle;
+  genload_ctx.object_size = obj_size;
+  genload_ctx.id = 0;
+  genload_ctx.overwrite_all = overwrite_all;
+  std::thread generator(GenerateLoad, &genload_ctx);
 
   sleep(1);
 
@@ -793,11 +820,12 @@ int main(int argc, char** argv) {
   CreateTimer(&timer, timer_interval_sec * 1000, TimerCallback, &tctx);
 
 
-  INFO_LOG("wait for producer / worker threads to finish");
+  INFO_LOG("wait for generator / worker threads to finish");
 
 
-  // wait for producer to finish.
-  producer.join();
+  // wait for generator to finish.
+  generator.join();
+  INFO_LOG("generator completed");
 
   //////////////////////////////////
   // then, tell workers to finish
@@ -807,7 +835,7 @@ int main(int argc, char** argv) {
 
     if (workers[i].joinable()) {
       workers[i].join();
-      INFO_LOG("joined thread %d", i);
+      INFO_LOG("joined worker thread %d", i);
     }
   }
 
