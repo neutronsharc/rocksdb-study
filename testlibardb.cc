@@ -38,6 +38,8 @@ static uint64_t GetRandom(uint64_t max_val);
 
 #define MAX_KEY_LEN (30)
 
+struct WorkerTaskContext;
+
 struct WorkItem {
   // 1: is write, 0: is read.
   int write;
@@ -79,6 +81,10 @@ struct WorkQueue {
   // work items are stored in this queue.
   std::queue<WorkItem> queue;
 
+  // measure cmd queue size, and batched cmd size.
+  struct hdr_histogram *queue_size_histo;
+  struct hdr_histogram *batch_size_histo;
+
   // If this queue has stopped.
   bool stopped;
 
@@ -97,9 +103,34 @@ struct WorkQueue {
     completed_write_size = 0;
     stopped = false;
     max_queue_size = qsize;
+    int lowest = 1;
+    int highest = 100;
+    int sig_digits = 3;
+    hdr_init(lowest, highest, sig_digits, &queue_size_histo);
+    hdr_init(lowest, highest, sig_digits, &batch_size_histo);
+    printf("work-queue hdr-histogram memory footprint = %ld, qsize histo %p\n",
+           hdr_get_memory_size(queue_size_histo), queue_size_histo);
+  }
+
+  ~WorkQueue() {
+    printf("work-queue free hdr-histograms\n");
+    free(queue_size_histo);
+    free(batch_size_histo);
   }
 
   void Stop() { stopped = true; }
+
+  void RecordQueueSize(int v) {
+    if (queue_size_histo) {
+      hdr_record_value(queue_size_histo, v);
+    }
+  }
+
+  void RecordBatchSize(int v) {
+    if (batch_size_histo) {
+      hdr_record_value(batch_size_histo, v);
+    }
+  }
 
   void IncIssued() {
     issued_requests++;
@@ -138,7 +169,7 @@ struct WorkQueue {
     // wait if queue overflows.
     while (queue.size() >= max_queue_size) {
       Unlock();
-      usleep(1000);
+      usleep(100);
       Lock();
     }
     // enqueu
@@ -156,9 +187,47 @@ struct WorkQueue {
     while (1) {
       // Grab head of queue if not empty.
       if (queue.size() > 0) {
+        RecordQueueSize(queue.size());
         *item = queue.front();
         queue.pop();
         pending_requests--;
+        RecordBatchSize(1);
+        Unlock();
+        return true;
+      }
+      // exit if we are done.
+      if (stopped) {
+        //INFO_LOG("exit dequeue without data");
+        Unlock();
+        return false;
+      }
+      // If queue is empty, relinqish lock and wait.
+      if (queue.size() == 0) {
+        struct timespec ts;
+        GetAbsTimeInFuture(&ts, 1000);
+        pthread_cond_timedwait(&pending_cond, &pending_lock, &ts);
+      }
+    }
+  }
+
+  // Fetch a bunch of available commands from queue, assign to the given task.
+  bool Dequeue(std::vector<WorkItem>& items, int target_batch_size) {
+    items.clear();
+    int batch_size = 0;
+    Lock();
+
+    while (1) {
+      // Grab head of queue if not empty.
+      if (queue.size() > 0) {
+        RecordQueueSize(queue.size());
+        while (queue.size() > 0 && batch_size < target_batch_size) {
+          WorkItem item = queue.front();
+          queue.pop();
+          pending_requests--;
+          items.push_back(item);
+          batch_size++;
+        }
+        RecordBatchSize(batch_size);
         Unlock();
         return true;
       }
@@ -272,6 +341,8 @@ struct WorkerTaskContext : public TaskContext {
 
   struct hdr_histogram *read_histo;
   struct hdr_histogram *write_histo;
+  // try to grab this many cmds in one batch.
+  int target_batch_size;
 
   void ReportLatency() {
     int i = current_lat_slot % 2;
@@ -312,7 +383,7 @@ struct WorkerTaskContext : public TaskContext {
     current_lat_slot = 1;
 
     int lowest = 1;
-    int highest = 10000000;
+    int highest = 1000000;
     int sig_digits = 3;
     hdr_init(lowest, highest, sig_digits, &read_histo);
     hdr_init(lowest, highest, sig_digits, &write_histo);
@@ -406,7 +477,6 @@ struct TimerContext {
 //////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////
-WorkQueue wqueue;
 
 
 static std::vector<std::thread> workers;
@@ -497,6 +567,8 @@ static void DoWork(WorkerTaskContext *ctx) {
   ctx->start_usec = NowInUsec();
   ctx->last_report_lat_timestamp = ctx->start_usec;
 
+  vector<WorkItem> work_items;
+  work_items.reserve(ctx->target_batch_size);
   while (!ctx->stopped) {
     WorkItem item;
     bool ret = ctx->queue->Dequeue(&item);
@@ -608,10 +680,30 @@ static void TimerCallback(union sigval sv) {
   uint64_t read_bytes = tc->stats.read_bytes - last_stats.read_bytes;
   uint64_t write_bytes = tc->stats.write_bytes - last_stats.write_bytes;
 
+  WorkQueue* queue = tasks_ctx[0]->queue;
+  queue->Lock();
+  int qsize_min = hdr_min(queue->queue_size_histo);
+  int qsize_p50 = hdr_value_at_percentile(queue->queue_size_histo, 50);
+  int qsize_p90 = hdr_value_at_percentile(queue->queue_size_histo, 90);
+  int qsize_p99 = hdr_value_at_percentile(queue->queue_size_histo, 99);
+  int qsize_p999 = hdr_value_at_percentile(queue->queue_size_histo, 99.9);
+  int qsize_max = hdr_max(queue->queue_size_histo);
+  hdr_reset(queue->queue_size_histo);
+  int batch_min = hdr_min(queue->batch_size_histo);
+  int batch_p50 = hdr_value_at_percentile(queue->batch_size_histo, 50);
+  int batch_p90 = hdr_value_at_percentile(queue->batch_size_histo, 90);
+  int batch_p99 = hdr_value_at_percentile(queue->batch_size_histo, 99);
+  int batch_p999 = hdr_value_at_percentile(queue->batch_size_histo, 99.9);
+  int batch_max = hdr_max(queue->batch_size_histo);
+  hdr_reset(queue->batch_size_histo);
+  queue->Unlock();
+
   INFO_LOG("in past %d seconds: %ld reads (%ld failure, %ld miss), %ld writes (%ld failure)\n"
            "      read IOPS %ld, read bw %.3f MB/s, write IOPS %ld, write bw %.3f MB/s\n"
            "      read lat(usec):  min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n"
-           "      write lat(usec): min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n",
+           "      write lat(usec): min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n"
+           "      qsize:      min %d, p50 %d, p90 %d, p99 %d, p999 %d, max %d\n"
+           "      batch size: min %d, p50 %d, p90 %d, p99 %d, p999 %d, max %d\n",
            tc->timer_interval_sec,
            reads,
            tc->stats.read_failure - last_stats.read_failure,
@@ -623,25 +715,67 @@ static void TimerCallback(union sigval sv) {
            (uint64_t)(writes / (elapsed_usecs / 1000000.0)),
            write_bytes / (elapsed_usecs + 0.0),
            rlat_min, rlat_p50, rlat_p90, rlat_p99, rlat_p999, rlat_max,
-           wlat_min, wlat_p50, wlat_p90, wlat_p99, wlat_p999, wlat_max);
+           wlat_min, wlat_p50, wlat_p90, wlat_p99, wlat_p999, wlat_max,
+           qsize_min, qsize_p50, qsize_p90, qsize_p99, qsize_p999, qsize_max,
+           batch_min, batch_p50, batch_p90, batch_p99, batch_p999, batch_max);
+}
+
+// variables that control benchmark behavior.
+char *dbpath = NULL;
+int num_threads = 1;
+uint64_t init_num_objs = 1000000;
+uint64_t total_target_qps = 10000;
+double write_ratio = 0;
+int runtime_sec = 30;
+int timer_interval_sec = 2;
+int cmd_queue_size = 4;
+int obj_size = 4096;
+bool overwrite_all = false;
+bool auto_compaction = false;
+int init_load_qps = 10000;
+char *config_file = NULL;
+int target_batch_size = 1;
+
+// Show current glb config.
+void ShowConfig() {
+  INFO_LOG("===========  Config::");
+  INFO_LOG("will open db at dir %s", dbpath);
+  //INFO_LOG("db rpc server address %s:%d", rpcip.c_str(), rpcport);
+  INFO_LOG("%s do auto compaction", auto_compaction ? "will" : "will NOT");
+  INFO_LOG("will run %d worker threads ", num_threads);
+  INFO_LOG("will run workload for %d seconds", runtime_sec);
+  INFO_LOG("object size %d", obj_size);
+  INFO_LOG("cmd queue size %d", cmd_queue_size);
+  INFO_LOG("init overwrite = %s", overwrite_all ? "true" : "false");
+  INFO_LOG("init load %ld objects", init_num_objs);
+  INFO_LOG("init load qps %d", init_load_qps);
+  INFO_LOG("target workload qps %d", total_target_qps);
+  INFO_LOG("write ratio = %f", write_ratio);
+  INFO_LOG("will use config file %s", config_file);
+  INFO_LOG("target cmd batch size %d", target_batch_size);
+  INFO_LOG("===========\n");
 }
 
 void help() {
   printf("Test libardb raw performance, mixed r/w ratio: \n");
   printf("parameters: \n");
+  printf("-f <config file>     : config file. Def no config file\n");
   printf("-p <dbpath>          : rocksdb paths. Must provide.\n");
-  printf("-a                   : run auto-compaction, default not\n");
-  printf("-t <num of threads>  : number of worker threads to run. Def = 1\n");
-  printf("-s <obj size>        : object size in bytes. Def = 4096\n");
-  printf("-n <num of objs>     : Init db with these many objects. Def = 1000000\n");
-  printf("-i <seconds>         : Run workoad for these many seconds. Default = 30\n");
-  printf("-Q <cmd queue size>  : Cmd queue size. Default = 4\n");
-  printf("-S                   : init load qps. Def 10000\n");
-  printf("-q <QPS>             : Aggregated workload target QPS by all threads. \n"
-         "                       Def = 10000 op/sec\n");
-  printf("-w <write ratio>     : write ratio. Def = 0\n");
-  printf("-f <config file>     : config file. Def no\n");
-  printf("-o                   : overwrite entire DB before test. Def not\n\n\n");
+  printf("-t <num of threads>  : number of worker threads to run. Def %d\n", num_threads);
+  printf("-s <obj size>        : object size in bytes. Def %d\n", obj_size);
+  printf("-n <num of objs>     : Init db with these many objects. Def %ld\n", init_num_objs);
+  printf("-i <seconds>         : Run workoad for these many seconds. Default %d\n", runtime_sec);
+  printf("-Q <cmd queue size>  : Cmd queue size. Default %d\n", cmd_queue_size);
+  printf("-S <QPS>             : init load qps. Def %d\n", init_load_qps);
+  printf("-q <QPS>             : Aggregated workload target QPS by all threads. Def %ld\n",
+         total_target_qps);
+  printf("-w <write ratio>     : write ratio. Def %f\n", write_ratio);
+  printf("-b <cmd batch size>  : try to coalesce this many cmds in one batch. Def %d\n",
+         target_batch_size);
+  printf("-a                   : run auto-compaction, default %s\n",
+         overwrite_all ? "true" : "false");
+  printf("-o                   : overwrite entire DB before test. Def %s\n\n\n",
+         overwrite_all ? "true" : "false");
 
   printf("******** below not used yet ************\n");
 
@@ -674,24 +808,11 @@ int main(int argc, char** argv) {
   }
 
   int c;
-  char *dbpath;
-  int num_threads = 1;
-  uint64_t init_num_objs = 1000000;
-  uint64_t total_target_qps = 10000;
-  double write_ratio = 0;
-  int runtime_sec = 30;
-  int timer_interval_sec = 2;
-  int cmd_queue_size = 4;
-  int obj_size = 4096;
-  bool overwrite_all = false;
-  bool auto_compaction = false;
-  int init_load_qps = 10000;
-  char *config_file = NULL;
 
   // Init random number.
   std::srand(NowInUsec());
 
-  while ((c = getopt(argc, argv, "f:S:Q:p:s:d:n:t:i:c:q:w:m:x:y:U:D:C:E:L:ohlakXBMA")) != EOF) {
+  while ((c = getopt(argc, argv, "f:p:t:s:n:i:Q:S:q:w:b:aoh")) != EOF) {
     switch(c) {
       case 'h':
         help();
@@ -732,6 +853,9 @@ int main(int argc, char** argv) {
       case 'f':
         config_file = optarg;
         break;
+      case 'b':
+        target_batch_size = atoi(optarg);
+        break;
       default:
         break;
     }
@@ -742,33 +866,17 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  std::string data_dir(dbpath);
 
   std::string rpcip;
   int rpcport = 0;
   get_maxspeed_host_ipv4(rpcip);
 
   // Show config.
-  INFO_LOG("===========  Config::");
-  INFO_LOG("will open db at dir %s", data_dir.c_str());
-  INFO_LOG("db rpc server address %s:%d", rpcip.c_str(), rpcport);
-  INFO_LOG("%s do auto compaction", auto_compaction ? "will" : "will NOT");
-  INFO_LOG("will run %d threads ", num_threads);
-  INFO_LOG("will run workload for %d seconds", runtime_sec);
-  INFO_LOG("object size %d", obj_size);
-  INFO_LOG("cmd queue size %d", cmd_queue_size);
-  INFO_LOG("init overwrite = %s", overwrite_all ? "true" : "false");
-  INFO_LOG("init load %ld objects", init_num_objs);
-  INFO_LOG("init load qps %d", init_load_qps);
-  INFO_LOG("target workload qps %d", total_target_qps);
-  INFO_LOG("write ratio = %f", write_ratio);
-  if (config_file) {
-    INFO_LOG("will use config file %s", config_file);
-  }
-  INFO_LOG("===========\n");
+  ShowConfig();
 
   KvHandle handle;
   PrepareDBEnv();
+  std::string data_dir(dbpath);
   if (config_file) {
     string cfile(config_file);
     handle.OpenWithConfigFile(data_dir, rpcip, rpcport, cfile);
@@ -777,7 +885,7 @@ int main(int argc, char** argv) {
   }
 
   //WorkQueue queue(cmd_queue_size);
-  wqueue.max_queue_size = cmd_queue_size;
+  WorkQueue wqueue(cmd_queue_size);;
 
   /////////////////////////////
   // Start worker threads.
@@ -786,6 +894,7 @@ int main(int argc, char** argv) {
     ctx->id = i;
     ctx->queue = &wqueue;
     ctx->db = &handle;
+    ctx->target_batch_size = target_batch_size;
     ctx->timer_interval_sec = timer_interval_sec;
     tasks_ctx.push_back(ctx);
     workers.push_back(std::thread(DoWork, ctx.get()));
