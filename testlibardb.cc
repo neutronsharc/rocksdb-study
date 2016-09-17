@@ -34,6 +34,23 @@
 
 using namespace ardb;
 
+/////////////////////// variables that control benchmark behavior.
+char *dbpath = NULL;
+int num_threads = 1;
+uint64_t init_num_objs = 1000000;
+uint64_t total_target_qps = 10000;
+double write_ratio = 0;
+int runtime_sec = 30;
+int timer_interval_sec = 2;
+int cmd_queue_size = 4;
+int obj_size = 4096;
+bool overwrite_all = false;
+bool auto_compaction = false;
+int init_load_qps = 10000;
+char *config_file = NULL;
+int target_batch_size = 1;
+
+///////////////////
 static uint64_t GetRandom(uint64_t max_val);
 
 #define MAX_KEY_LEN (30)
@@ -84,6 +101,8 @@ struct WorkQueue {
   // measure cmd queue size, and batched cmd size.
   struct hdr_histogram *queue_size_histo;
   struct hdr_histogram *batch_size_histo;
+
+  uint64_t item_cnt = 0;
 
   // If this queue has stopped.
   bool stopped;
@@ -142,6 +161,10 @@ struct WorkQueue {
     completed_requests++;
   }
 
+  void IncCompleted(int v) {
+    completed_requests += v;
+  }
+
   uint64_t GetCompleted() { return completed_requests; }
 
   void IncCompletedReadSize(int size) {
@@ -178,7 +201,10 @@ struct WorkQueue {
     issued_requests++;
     pending_requests++;
     // notify other threads.
-    pthread_cond_signal(&pending_cond);
+    item_cnt++;
+    if (item_cnt % 2 == 0) {
+      pthread_cond_signal(&pending_cond);
+    }
     Unlock();
   }
 
@@ -217,11 +243,20 @@ struct WorkQueue {
     Lock();
 
     while (1) {
-      // Grab head of queue if not empty.
+      int write = 0;
       if (queue.size() > 0) {
+        // Grab head of queue if not empty.
         RecordQueueSize(queue.size());
+        WorkItem item = queue.front();
+        queue.pop();
+        pending_requests--;
+        write = item.write;
+        items.push_back(item);
+        batch_size++;
+        // Grab subsequent requests of the same type.
         while (queue.size() > 0 && batch_size < target_batch_size) {
-          WorkItem item = queue.front();
+          item = queue.front();
+          if (item.write != write) break;
           queue.pop();
           pending_requests--;
           items.push_back(item);
@@ -555,10 +590,24 @@ static void GenerateLoad(LoadGeneratorTaskContext *ctx) {
 
 // Worker thread: grab work items from queue and exec.
 static void DoWork(WorkerTaskContext *ctx) {
-  int bufsize = 50000;
+  // Parpare batch requests cmds.
+  int bufsize = obj_size * ctx->target_batch_size;
   char buf[bufsize];
-  memset(buf, 0xA5, bufsize);
+  char keybuf[MAX_KEY_LEN * ctx->target_batch_size];
 
+  memset(buf, 0xA5, bufsize);
+  const char *keys[ctx->target_batch_size];
+  int keys_size[ctx->target_batch_size];
+  char *values[ctx->target_batch_size];
+  int values_buf_size[ctx->target_batch_size];
+  int values_size[ctx->target_batch_size];
+  int results[ctx->target_batch_size];
+
+  for (int i = 0; i < ctx->target_batch_size; i++) {
+    keys[i] = keybuf + MAX_KEY_LEN * i;
+    values[i] = buf + obj_size * i;
+    values_buf_size[i] = obj_size;
+  }
 
   INFO_LOG("worker thread %d started", ctx->id);
 
@@ -570,51 +619,76 @@ static void DoWork(WorkerTaskContext *ctx) {
   vector<WorkItem> work_items;
   work_items.reserve(ctx->target_batch_size);
   while (!ctx->stopped) {
-    WorkItem item;
-    bool ret = ctx->queue->Dequeue(&item);
+    //WorkItem item;
+    //bool ret = ctx->queue->Dequeue(&item);
+    // Grab a batch of commands. All cmds are of the same type (read/write).
+    work_items.clear();
+    bool ret = ctx->queue->Dequeue(work_items, ctx->target_batch_size);
     if (!ret || ctx->stopped) {
       break;
     }
+    int write = work_items[0].write;
+    int num_items = work_items.size();
+    int total_size = 0;
+    for (int i = 0; i < num_items; i++) {
+      if (work_items[i].write != write) {
+        ERROR_LOG("inconsistent request types in batch cmds");
+        assert(0);
+      }
+      memcpy((char*)keys[i], work_items[i].key, work_items[i].key_size);
+      keys_size[i] = work_items[i].key_size;
+      values_size[i] = work_items[i].data_size;
+      total_size += work_items[i].data_size;
+    }
+
     int rv;
     uint64_t t1 = NowInUsec();
-    if (item.write) {
-      rv = ctx->db->WriteStore(item.key, item.key_size, buf, item.data_size);
+    uint64_t t2;
+    if (write) {
+      // do batch write.
+      //rv = ctx->db->WriteStore(item.key, item.key_size, buf, item.data_size);
+      rv = ctx->db->BatchWriteStore(keys, keys_size, num_items, values, values_size);
+      t2 = NowInUsec();
       if (rv == 0) {
-        ctx->queue->IncCompletedWriteSize(item.data_size);
-        ctx->queue->IncCompleted();
-        ctx->num_writes++;
-        ctx->write_bytes += item.data_size;
-        uint64_t t2 = NowInUsec();
+        ctx->queue->IncCompletedWriteSize(total_size);
+        ctx->queue->IncCompleted(num_items);
+        ctx->num_writes += num_items;
+        ctx->write_bytes += total_size;
         ctx->RecordWriteLatency(t2 - t1);
-        if (t2 - ctx->last_report_lat_timestamp >= report_interval_usec) {
-          ctx->ReportLatency();
-          ctx->last_report_lat_timestamp = t2;
-        }
       } else {
-        ctx->write_failure++;
+        ctx->write_failure += num_items;
+      }
+      if (t2 - ctx->last_report_lat_timestamp >= report_interval_usec) {
+        ctx->ReportLatency();
+        ctx->last_report_lat_timestamp = t2;
       }
     } else {
+      // do batch read.
       int data_len = 0;
-      rv = ctx->db->ReadStore(item.key, item.key_size, buf, &data_len);
-      if (rv == 0) {
-        assert(data_len == item.data_size);
-        ctx->queue->IncCompletedReadSize(data_len);
-        ctx->queue->IncCompleted();
-        ctx->num_reads++;
-        ctx->read_bytes += data_len;
-        uint64_t t2 = NowInUsec();
-        ctx->RecordReadLatency(t2 - t1);
-        if (t2 - ctx->last_report_lat_timestamp >= report_interval_usec) {
-          ctx->ReportLatency();
-          ctx->last_report_lat_timestamp = t2;
+      //rv = ctx->db->ReadStore(item.key, item.key_size, buf, &data_len);
+      ctx->db->BatchReadStore(keys, keys_size, num_items, values, values_buf_size,
+                              values_size, results);
+      t2 = NowInUsec();
+      ctx->queue->IncCompleted(num_items);
+      for (int i = 0; i < num_items; i++) {
+        if (results[i] == 0) {
+          assert(values_size[i] == work_items[i].data_size);
+          ctx->queue->IncCompletedReadSize(values_size[i]);
+          ctx->num_reads++;
+          ctx->read_bytes += values_size[i];
+        } else if (results[i] == 1) {
+          ctx->read_miss++;
+        } else {
+          ctx->read_failure++;
         }
-      } else if (rv == 1) {
-        ctx->read_miss++;
-      } else {
-        ctx->read_failure++;
+      }
+      ctx->RecordReadLatency(t2 - t1);
+      if (t2 - ctx->last_report_lat_timestamp >= report_interval_usec) {
+        ctx->ReportLatency();
+        ctx->last_report_lat_timestamp = t2;
       }
     }
-    ctx->total_ops++;
+    ctx->total_ops += num_items;
   }
 
   INFO_LOG("worker thread %d exited", ctx->id);
@@ -720,21 +794,6 @@ static void TimerCallback(union sigval sv) {
            batch_min, batch_p50, batch_p90, batch_p99, batch_p999, batch_max);
 }
 
-// variables that control benchmark behavior.
-char *dbpath = NULL;
-int num_threads = 1;
-uint64_t init_num_objs = 1000000;
-uint64_t total_target_qps = 10000;
-double write_ratio = 0;
-int runtime_sec = 30;
-int timer_interval_sec = 2;
-int cmd_queue_size = 4;
-int obj_size = 4096;
-bool overwrite_all = false;
-bool auto_compaction = false;
-int init_load_qps = 10000;
-char *config_file = NULL;
-int target_batch_size = 1;
 
 // Show current glb config.
 void ShowConfig() {
