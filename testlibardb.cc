@@ -36,9 +36,9 @@ using namespace ardb;
 
 /////////////////////// variables that control benchmark behavior.
 char *dbpath = NULL;
-int num_threads = 1;
+int num_threads = 4;
 uint64_t init_num_objs = 1000000;
-uint64_t total_target_qps = 10000;
+uint64_t total_target_qps = 100000;
 double write_ratio = 0;
 int runtime_sec = 30;
 int timer_interval_sec = 2;
@@ -46,9 +46,9 @@ int cmd_queue_size = 4;
 int obj_size = 4096;
 bool overwrite_all = false;
 bool auto_compaction = false;
-int init_load_qps = 10000;
+int init_load_qps = 50000;
 char *config_file = NULL;
-int target_batch_size = 1;
+int target_batch_size = 4;
 
 ///////////////////
 static uint64_t GetRandom(uint64_t max_val);
@@ -86,6 +86,7 @@ struct WorkItem {
 struct WorkQueue {
   // to synchronize access.
   pthread_cond_t pending_cond;
+  pthread_cond_t qempty_cond;
   pthread_mutex_t pending_lock;
 
   std::atomic<uint64_t> issued_requests;
@@ -103,6 +104,8 @@ struct WorkQueue {
   struct hdr_histogram *batch_size_histo;
 
   uint64_t item_cnt = 0;
+  // signal coalescing at this many units.
+  int coalesce_units = 1;
 
   // If this queue has stopped.
   bool stopped;
@@ -115,6 +118,7 @@ struct WorkQueue {
 
   WorkQueue(int qsize) {
     pthread_cond_init(&pending_cond, NULL);
+    pthread_cond_init(&qempty_cond, NULL);
     pthread_mutex_init(&pending_lock, NULL);
     issued_requests = 0;
     completed_requests = 0;
@@ -122,8 +126,9 @@ struct WorkQueue {
     completed_write_size = 0;
     stopped = false;
     max_queue_size = qsize;
+    coalesce_units = 1;
     int lowest = 1;
-    int highest = 100;
+    int highest = 10000000;
     int sig_digits = 3;
     hdr_init(lowest, highest, sig_digits, &queue_size_histo);
     hdr_init(lowest, highest, sig_digits, &batch_size_histo);
@@ -191,9 +196,7 @@ struct WorkQueue {
     Lock();
     // wait if queue overflows.
     while (queue.size() >= max_queue_size) {
-      Unlock();
-      usleep(100);
-      Lock();
+      pthread_cond_wait(&qempty_cond, &pending_lock);
     }
     // enqueu
     queue.push(item);
@@ -202,7 +205,7 @@ struct WorkQueue {
     pending_requests++;
     // notify other threads.
     item_cnt++;
-    if (item_cnt % 2 == 0) {
+    if (item_cnt % coalesce_units == 0) {
       pthread_cond_signal(&pending_cond);
     }
     Unlock();
@@ -263,9 +266,13 @@ struct WorkQueue {
           batch_size++;
         }
         RecordBatchSize(batch_size);
+        if (queue.size() <= max_queue_size) {
+          pthread_cond_signal(&qempty_cond);
+        }
         Unlock();
         return true;
       }
+      pthread_cond_signal(&qempty_cond);
       // exit if we are done.
       if (stopped) {
         //INFO_LOG("exit dequeue without data");
@@ -281,6 +288,55 @@ struct WorkQueue {
     }
   }
 };
+
+
+struct FinishedQueue : public WorkQueue {
+
+  uint64_t acked_requests = 0;
+
+  FinishedQueue(int qsize) : WorkQueue(qsize) {
+    coalesce_units = 1;
+  }
+
+  void Enqueue(std::vector<WorkItem>& items) {
+    Lock();
+    for (auto& item : items) {
+      queue.push(item);
+    }
+    // notify other threads.
+    pthread_cond_signal(&pending_cond);
+    Unlock();
+  }
+
+  bool Dequeue() {
+    Lock();
+    while (1) {
+      // Grab head of queue if not empty.
+      if (queue.size() > 0) {
+        RecordQueueSize(queue.size());
+        while (queue.size() > 0) {
+          WorkItem item = queue.front();
+          queue.pop();
+          acked_requests++;
+        }
+        Unlock();
+        return true;
+      }
+      // exit if we are done.
+      if (stopped) {
+        Unlock();
+        return false;
+      }
+      // If queue is empty, relinqish lock and wait.
+      if (queue.size() == 0) {
+        struct timespec ts;
+        GetAbsTimeInFuture(&ts, 1000);
+        pthread_cond_timedwait(&pending_cond, &pending_lock, &ts);
+      }
+    }
+  }
+};
+
 
 // generic context for a newly-spawned thread.
 struct TaskContext {
@@ -309,6 +365,8 @@ struct TaskContext {
   KvHandle *db;
 
   WorkQueue *queue;
+
+  FinishedQueue *finished_queue;
 
   std::mutex mtx;
   // replicated downstream rpc servers.
@@ -488,6 +546,9 @@ struct OpStats {
   uint64_t write_bytes = 0;
   uint64_t write_failure = 0;
 
+  // this is # of rqsts that have been finished and acked in the FinishedQueue.
+  uint64_t acked_requests = 0;
+
   OpStats() {}
 };
 
@@ -530,13 +591,16 @@ static uint64_t GetRandom(uint64_t max_val) {
 // and insert items to shared queue.
 static void GenerateLoad(LoadGeneratorTaskContext *ctx) {
 
+  uint64_t t1, t2, t3;
   INFO_LOG("generator thread %d started", ctx->id);
 
   // Overwrite entire db with data.
   if (ctx->overwrite_all) {
     ctx->next_obj_id = 0;
     INFO_LOG("will populate %ld objects", ctx->init_num_objs);
-    uint64_t t1 = NowInUsec();
+    ctx->start_usec = NowInUsec();
+    ctx->total_ops = 0;
+    t1 = NowInUsec();
     while (ctx->next_obj_id < ctx->init_num_objs) {
       WorkItem item;
       snprintf(item.key, MAX_KEY_LEN, "%020ld", (ctx->next_obj_id++) * ctx->object_size);
@@ -547,15 +611,22 @@ static void GenerateLoad(LoadGeneratorTaskContext *ctx) {
       ctx->total_ops++;
       ctx->RateLimit(ctx->init_load_qps);
     }
-    uint64_t t2 = NowInUsec();
+    t2 = NowInUsec();
     // wait for outstanding rqsts to finish.
     while (ctx->queue->GetCompleted() < ctx->queue->GetIssued()) {
       usleep(100000);
     }
-    uint64_t t3 = NowInUsec();
-    INFO_LOG("generator init phase: generate work items %ld usec, "
-             "wait for init completion %ld usec\n", t2 - t1, t3 - t2);
+    t3 = NowInUsec();
+    INFO_LOG("generator init phase: generate work items %f sec, "
+             "wait for init completion %f secs\n",
+             (t2 - t1) / 1000000.0, (t3 - t2) / 1000000.0);
   }
+  /*INFO_LOG("load gen will compact db %s", ctx->db->DbPath().c_str());
+  t1 = NowInUsec();
+  ctx->db->Compact();
+  t2 = NowInUsec() - t1;
+  INFO_LOG("finished db %s compaction in %f sec", ctx->db->DbPath().c_str(), t2 / 1000000.0);*/
+
 
   ctx->start_usec = NowInUsec();
   ctx->total_ops = 0;
@@ -578,6 +649,8 @@ static void GenerateLoad(LoadGeneratorTaskContext *ctx) {
   }
 
   // wait for outstanding rqsts to finish.
+  INFO_LOG("load-generator: generated %ld rqsts, finished %ld, waiting for completion",
+           ctx->total_ops, ctx->queue->GetCompleted());
   while (ctx->queue->GetCompleted() < ctx->queue->GetIssued()) {
     usleep(100000);
   }
@@ -586,6 +659,17 @@ static void GenerateLoad(LoadGeneratorTaskContext *ctx) {
   ctx->queue->Stop();
 
   INFO_LOG("generator thread %d exited", ctx->id);
+}
+
+// Thread to handle work-done events.
+static void WorkDoneThread(WorkerTaskContext *ctx) {
+  while (!ctx->stopped) {
+    bool ret = ctx->finished_queue->Dequeue();
+    if (!ret) {
+      break;
+    }
+  }
+  INFO_LOG("work_done_thread exited");
 }
 
 // Worker thread: grab work items from queue and exec.
@@ -689,6 +773,7 @@ static void DoWork(WorkerTaskContext *ctx) {
       }
     }
     ctx->total_ops += num_items;
+    ctx->finished_queue->Enqueue(work_items);
   }
 
   INFO_LOG("worker thread %d exited", ctx->id);
@@ -772,13 +857,24 @@ static void TimerCallback(union sigval sv) {
   hdr_reset(queue->batch_size_histo);
   queue->Unlock();
 
-  INFO_LOG("in past %d seconds: %ld reads (%ld failure, %ld miss), %ld writes (%ld failure)\n"
+  FinishedQueue *finished_queue = tasks_ctx[0]->finished_queue;
+  finished_queue->Lock();
+  tc->stats.acked_requests = finished_queue->acked_requests;
+  // TODO: check finished_queue's queue size histogram.
+  finished_queue->Unlock();
+  uint64_t acked_in_last_cycle = tc->stats.acked_requests - last_stats.acked_requests;
+
+
+  INFO_LOG("in past %d seconds\n"
+           "      %ld acked rqsts, %ld reads(%ld failure, %ld miss), %ld writes(%ld failure)\n"
            "      read IOPS %ld, read bw %.3f MB/s, write IOPS %ld, write bw %.3f MB/s\n"
            "      read lat(usec):  min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n"
            "      write lat(usec): min %ld, p50 %ld, p90 %ld, p99 %ld, p999 %ld, max %ld\n"
            "      qsize:      min %d, p50 %d, p90 %d, p99 %d, p999 %d, max %d\n"
-           "      batch size: min %d, p50 %d, p90 %d, p99 %d, p999 %d, max %d\n",
+           "      batch size: min %d, p50 %d, p90 %d, p99 %d, p999 %d, max %d\n"
+           "      finished_queue: acked in last cycle %ld, %ld acks/s\n",
            tc->timer_interval_sec,
+           acked_in_last_cycle,
            reads,
            tc->stats.read_failure - last_stats.read_failure,
            tc->stats.read_miss - last_stats.read_miss,
@@ -791,7 +887,8 @@ static void TimerCallback(union sigval sv) {
            rlat_min, rlat_p50, rlat_p90, rlat_p99, rlat_p999, rlat_max,
            wlat_min, wlat_p50, wlat_p90, wlat_p99, wlat_p999, wlat_max,
            qsize_min, qsize_p50, qsize_p90, qsize_p99, qsize_p999, qsize_max,
-           batch_min, batch_p50, batch_p90, batch_p99, batch_p999, batch_max);
+           batch_min, batch_p50, batch_p90, batch_p99, batch_p999, batch_max,
+           acked_in_last_cycle, (uint64_t)(acked_in_last_cycle / (elapsed_usecs / 1000000.0)));
 }
 
 
@@ -943,8 +1040,21 @@ int main(int argc, char** argv) {
     handle.Open(data_dir, rpcip, rpcport, auto_compaction);
   }
 
-  //WorkQueue queue(cmd_queue_size);
+  // Perfornamce tuning:
+  // signal coalesce doesn't make a noticeble difference.
+  // However batch-cmds really makes a difference
+  //
+  // Test with 8 iothreads, 1 db, 4GB data at 4KB obj size.
+  // Batch-size  random-read IOPS   99% lat(us)
+  //    1        170 K                133
+  //    4        240 K                672
+  //    8        260 K                1180
+
   WorkQueue wqueue(cmd_queue_size);;
+  wqueue.coalesce_units = 4;
+
+  FinishedQueue finished_queue(cmd_queue_size);
+  finished_queue.coalesce_units = 4;
 
   /////////////////////////////
   // Start worker threads.
@@ -952,12 +1062,18 @@ int main(int argc, char** argv) {
     std::shared_ptr<WorkerTaskContext> ctx(new WorkerTaskContext());
     ctx->id = i;
     ctx->queue = &wqueue;
+    ctx->finished_queue = &finished_queue;
     ctx->db = &handle;
     ctx->target_batch_size = target_batch_size;
     ctx->timer_interval_sec = timer_interval_sec;
     tasks_ctx.push_back(ctx);
     workers.push_back(std::thread(DoWork, ctx.get()));
   }
+
+  WorkerTaskContext workdone_ctx;
+  workdone_ctx.queue = &wqueue;
+  workdone_ctx.finished_queue = &finished_queue;
+  std::thread workdone(WorkDoneThread, &workdone_ctx);
 
   // start load generator.
   LoadGeneratorTaskContext genload_ctx;
@@ -967,6 +1083,7 @@ int main(int argc, char** argv) {
   genload_ctx.write_ratio = write_ratio;
   genload_ctx.runtime_usec = runtime_sec * 1000000L;
   genload_ctx.queue = &wqueue;
+  genload_ctx.finished_queue = &finished_queue;
   genload_ctx.db = &handle;
   genload_ctx.object_size = obj_size;
   genload_ctx.id = 0;
@@ -1006,6 +1123,10 @@ int main(int argc, char** argv) {
       INFO_LOG("joined worker thread %d", i);
     }
   }
+
+  // Stop the work-done thread.
+  finished_queue.Stop();
+  workdone.join();
 
   ////////////////////////////////
   // stop timer
